@@ -499,7 +499,7 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
     ];
     let stem_lower = body.split(|&b| b == b'.').next().unwrap_or(body);
     let stem_upper: Vec<u8> = stem_lower.iter().map(|b| b.to_ascii_uppercase()).collect();
-    if DOS_RESERVED.iter().any(|r| *r == stem_upper.as_slice()) {
+    if DOS_RESERVED.contains(&stem_upper.as_slice()) {
         return Err(ArchiveError::InvalidName(
             String::from_utf8_lossy(body).into_owned(),
             "reserved DOS device name",
