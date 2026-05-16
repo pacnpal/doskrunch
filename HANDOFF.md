@@ -62,7 +62,7 @@ In order. Each step ends with a verify gate.
 
 Run on a host with Docker available:
 
-```
+```bash
 docker build -t doskrunch-watcom stubs/
 docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
 ls -la stubs/blobs/stored_8086.bin

@@ -168,7 +168,7 @@ int main(int argc, char **argv)
                 if (read_exact(self, ch_b, 4) != 0) die("skip chunk hdr");
                 if (skip_bytes(self, (u32)rd_u16(ch_b)) != 0) die("skip chunk");
             }
-            (void)read_exact(self, filecrc, 4);
+            if (read_exact(self, filecrc, 4) != 0) die("skip filecrc");
             continue;
         }
 

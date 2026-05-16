@@ -14,7 +14,7 @@ PLAN.md is the authoritative design doc. Karpathy guidelines apply: simplicity f
 
 ## Host build & test
 
-```
+```bash
 cargo build --release
 cargo test
 cargo run --bin doskrunch -- pack out.exe file1 file2
@@ -24,11 +24,12 @@ cargo run --bin doskrunch -- inspect out.exe
 
 ## Stub build
 
-Stubs build inside the Open Watcom v2 Docker image:
+Stubs build inside the Open Watcom v2 Docker image. The Makefile is GNU
+make (the Linux image already has `make` installed):
 
-```
+```bash
 docker build -t doskrunch-watcom stubs/
-docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom wmake
+docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
 ```
 
 Watcom CPU flags per tier:
@@ -44,7 +45,7 @@ Watcom CPU flags per tier:
 | p2           | `-6`        | P6 OoO. |
 | p3           | `-6` + SSE  | SSE copy paths. |
 
-Each stub variant emits `stubs/blobs/<algo>_<tier>.bin` (raw blob, no MZ header — the host prepends a fresh MZ at pack time).
+Each stub variant emits `stubs/blobs/<algo>_<tier>.bin`, which is a complete DOS .EXE (MZ header + load image). The Rust host appends the doskrunch archive + DKTR trailer directly to this blob — no MZ regeneration.
 
 ## Stub size budget
 

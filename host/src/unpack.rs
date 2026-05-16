@@ -18,10 +18,34 @@ pub fn unpack(opts: UnpackOptions) -> Result<()> {
 
     for entry in &archive.files {
         let stored = entry.display_name();
-        let out = opts.dest.join(&stored);
+        let safe = safe_basename(&stored)?;
+        let out = opts.dest.join(safe);
         write_entry(&out, entry, archive.algorithm)?;
     }
     Ok(())
+}
+
+/// Reject stored names containing path separators, `..`, NULs, leading
+/// dots, or empty strings. The host always writes 8.3 ASCII names, but
+/// `unpack` may be fed a hostile archive — keep it strictly basename-only.
+fn safe_basename(name: &str) -> Result<&str> {
+    if name.is_empty() {
+        bail!("archive entry has empty name");
+    }
+    if name == "." || name == ".." {
+        bail!("archive entry name '{}' is reserved", name);
+    }
+    for b in name.bytes() {
+        match b {
+            b'/' | b'\\' | 0 => bail!("archive entry name '{}' contains path separator or NUL", name),
+            b if b < 0x20 => bail!("archive entry name '{}' contains control character", name),
+            _ => {}
+        }
+    }
+    if name.starts_with('.') {
+        bail!("archive entry name '{}' has a leading dot", name);
+    }
+    Ok(name)
 }
 
 pub fn load_archive(path: &Path) -> Result<Archive> {
@@ -54,7 +78,12 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
             }
         );
     }
-    let mut data = Vec::with_capacity(entry.uncompressed_size() as usize);
+    // Cap the prealloc so a hostile archive can't trigger huge allocs.
+    // 16 MiB matches what a single u16-bounded chunk can produce in
+    // realistic Phase 1 packs.
+    let total = entry.uncompressed_size();
+    let prealloc = std::cmp::min(total as usize, 16 * 1024 * 1024);
+    let mut data = Vec::with_capacity(prealloc);
     for c in &entry.chunks {
         if c.data.len() != c.uncompressed_size as usize {
             bail!(
@@ -75,9 +104,8 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
             crc
         );
     }
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent).ok();
-    }
+    // No parent-dir creation: `safe_basename` rejects path separators,
+    // so `out` is always `<dest>/<basename>`. `dest` was created in unpack().
     fs::write(out, &data).with_context(|| format!("write {}", out.display()))?;
     Ok(())
 }

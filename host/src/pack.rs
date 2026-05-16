@@ -22,9 +22,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     if matches!(opts.algorithm, Algorithm::Lzma)
         && matches!(opts.target, TargetTier::I8086 | TargetTier::I286)
     {
-        bail!(
-            "LZMA requires 386 or later; pick --target 386 or higher, or use --algo aplib."
-        );
+        bail!("LZMA requires 386 or later; pick --target 386 or higher.");
     }
     if !matches!(opts.algorithm, Algorithm::Stored) {
         bail!(

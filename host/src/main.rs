@@ -27,8 +27,9 @@ enum Cmd {
         /// Input files (directories not yet supported; lands in phase 4).
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
-        /// Compression algorithm.
-        #[arg(long, value_enum, default_value_t = AlgoArg::Aplib)]
+        /// Compression algorithm. Phase 1 only ships `stored`; the
+        /// default flips to `aplib` once Phase 2 lands.
+        #[arg(long, value_enum, default_value_t = AlgoArg::Stored)]
         algo: AlgoArg,
         /// CPU target tier for the embedded stub.
         #[arg(long, value_enum, default_value_t = TargetArg::I8086)]
@@ -121,21 +122,21 @@ fn main() -> Result<()> {
         Cmd::Unpack { input, dest } => unpack::unpack(unpack::UnpackOptions { input, dest }),
         Cmd::Inspect { input } => inspect::inspect(inspect::InspectOptions { input }),
         Cmd::ListTargets => {
-            println!("8086 (default)");
-            println!("286");
-            println!("386");
-            println!("486");
-            println!("pentium");
-            println!("pentium-mmx");
-            println!("p2");
-            println!("p3");
+            println!("8086         shipped (default)");
+            println!("286          planned");
+            println!("386          planned (phase 3)");
+            println!("486          planned (phase 5)");
+            println!("pentium      planned (phase 3)");
+            println!("pentium-mmx  planned (phase 5)");
+            println!("p2           planned (phase 5)");
+            println!("p3           planned (phase 5)");
             Ok(())
         }
         Cmd::ListAlgos => {
-            println!("stored      no compression");
-            println!("aplib       aPLib (default; via apultra)");
-            println!("lzsa2       LZSA2 (fast decompression)");
-            println!("lzma        LZMA  (best ratio; 386+ only)");
+            println!("stored       shipped (default in phase 1)");
+            println!("aplib        planned (phase 2; via apultra)");
+            println!("lzsa2        planned (phase 6; fast decompression)");
+            println!("lzma         planned (phase 5; best ratio, 386+ only)");
             Ok(())
         }
     }

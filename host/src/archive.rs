@@ -304,11 +304,14 @@ fn read_file<R: Read>(r: &mut R) -> Result<FileEntry, ArchiveError> {
     let mut b1 = [0u8; 1];
     r.read_exact(&mut b1)?;
     let name_len = b1[0] as usize;
-    if name_len == 0 {
+    if name_len < 2 {
+        // PLAN.md §8: name is NUL-terminated and the NUL is included in
+        // name_len. A 1-byte name would be just the NUL.
         return Err(ArchiveError::EmptyFileName);
     }
     let mut name = vec![0u8; name_len];
     r.read_exact(&mut name)?;
+    validate_archive_name(&name)?;
 
     let mut attrs = [0u8; 1];
     r.read_exact(&mut attrs)?;
@@ -355,6 +358,45 @@ fn read_file<R: Read>(r: &mut R) -> Result<FileEntry, ArchiveError> {
         chunks,
         crc32: u32::from_le_bytes(crc),
     })
+}
+
+/// Reject names that aren't NUL-terminated 8.3-ish ASCII basenames.
+/// First line of defense before unpack tries to materialize the path.
+fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
+    if name.last() != Some(&0) {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(name).into_owned(),
+            "missing trailing NUL",
+        ));
+    }
+    let body = &name[..name.len() - 1];
+    if body.is_empty() {
+        return Err(ArchiveError::EmptyFileName);
+    }
+    for &b in body {
+        match b {
+            0 | b'/' | b'\\' | b':' => {
+                return Err(ArchiveError::InvalidName(
+                    String::from_utf8_lossy(body).into_owned(),
+                    "path separator or embedded NUL",
+                ));
+            }
+            b if b < 0x20 => {
+                return Err(ArchiveError::InvalidName(
+                    String::from_utf8_lossy(body).into_owned(),
+                    "control character",
+                ));
+            }
+            _ => {}
+        }
+    }
+    if body == b".." || body == b"." {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(body).into_owned(),
+            "reserved name",
+        ));
+    }
+    Ok(())
 }
 
 /// Write the trailer that lets the stub find the archive at runtime.
@@ -418,6 +460,7 @@ pub enum ArchiveError {
     UnknownTarget(u8),
     HeaderCrcMismatch { expected: u32, actual: u32 },
     EmptyFileName,
+    InvalidName(String, &'static str),
     SizeMismatch {
         file: String,
         declared: u32,
@@ -440,6 +483,7 @@ impl std::fmt::Display for ArchiveError {
                 "archive header crc mismatch: stored {expected:#010x}, computed {actual:#010x}"
             ),
             Self::EmptyFileName => write!(f, "file entry has zero-length name"),
+            Self::InvalidName(name, why) => write!(f, "invalid file name {name:?}: {why}"),
             Self::SizeMismatch {
                 file,
                 declared,
@@ -541,6 +585,42 @@ mod tests {
         let mut buf = Vec::new();
         write_trailer(&mut buf, 0xdead_beef).unwrap();
         assert_eq!(read_trailer(&buf).unwrap(), 0xdead_beef);
+    }
+
+    #[test]
+    fn rejects_path_separator_in_name() {
+        for bad in [&b"../etc\0"[..], &b"a/b\0"[..], &b"a\\b\0"[..], &b"a:b\0"[..]] {
+            let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+            a.files = vec![FileEntry {
+                name: bad.to_vec(),
+                attrs: 0x20,
+                timestamp: 0,
+                chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+                crc32: crc32fast::hash(&[]),
+            }];
+            let mut buf = Vec::new();
+            a.write(&mut buf).unwrap();
+            let mut r = std::io::Cursor::new(&buf);
+            let err = Archive::read(&mut r).unwrap_err();
+            assert!(matches!(err, ArchiveError::InvalidName(_, _)), "expected InvalidName for {bad:?}, got {err:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_name_without_nul_terminator() {
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.files = vec![FileEntry {
+            name: b"NONUL".to_vec(),
+            attrs: 0x20,
+            timestamp: 0,
+            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            crc32: crc32fast::hash(&[]),
+        }];
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidName(_, _)));
     }
 
     #[test]
