@@ -43,6 +43,19 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             opts.target.name()
         );
     }
+    // Detect the committed placeholder (256 bytes; MZ header + zero
+    // padding) so users don't ship a non-runnable .EXE without
+    // noticing. A real Watcom-built stub is several KB and has
+    // executable bytes beyond the MZ header.
+    if stub.len() <= 512 && stub[28..].iter().all(|&b| b == 0) {
+        eprintln!(
+            "warning: stub blob for ({}, {}) looks like the placeholder \
+             (MZ header + zero padding). The resulting .EXE will not run \
+             on DOS until the Watcom-built blob replaces stubs/blobs/.",
+            opts.algorithm.name(),
+            opts.target.name()
+        );
+    }
 
     let mut archive = Archive::new(opts.algorithm, opts.target);
     if !opts.preserve_timestamps {

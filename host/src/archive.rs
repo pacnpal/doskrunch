@@ -363,7 +363,12 @@ fn read_file<R: Read>(r: &mut R, budget: &mut u64) -> Result<FileEntry, ArchiveE
         *budget -= csize as u64;
         let mut data = vec![0u8; csize];
         r.read_exact(&mut data)?;
-        sum_u = sum_u.saturating_add(usize_u as u32);
+        // Use checked_add so a malformed archive with many large
+        // chunks can't saturate at u32::MAX and pass the
+        // sum_u == expected_uncompressed comparison by accident.
+        sum_u = sum_u
+            .checked_add(usize_u as u32)
+            .ok_or(ArchiveError::SizeOverflow)?;
         chunks.push(Chunk {
             uncompressed_size: usize_u,
             data,
@@ -574,6 +579,7 @@ pub enum ArchiveError {
     InvalidName(String, &'static str),
     TooManyChunks(usize),
     ArchiveTooLarge { declared: u64, kind: &'static str },
+    SizeOverflow,
     SizeMismatch {
         file: String,
         declared: u32,
@@ -601,6 +607,7 @@ impl std::fmt::Display for ArchiveError {
             Self::ArchiveTooLarge { declared, kind } => {
                 write!(f, "archive declares {declared} {kind} bytes, refusing to allocate")
             }
+            Self::SizeOverflow => write!(f, "per-chunk uncompressed sizes sum overflow u32"),
             Self::SizeMismatch {
                 file,
                 declared,

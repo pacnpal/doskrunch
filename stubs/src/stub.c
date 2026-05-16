@@ -123,8 +123,13 @@ static int validate_name(const char *s, unsigned slen)
     for (i = 0; i < slen; i++) {
         unsigned char c = (unsigned char)s[i];
         if (c < 0x20 || c >= 0x80) return 1;
-        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?'
-         || c == '"' || c == '<' || c == '>' || c == '|') return 1;
+        /* FAT 8.3 illegal byte set — mirrors host/src/name83.rs ILLEGAL
+         * so an archive that slipped past the host validator can't
+         * land an unexpected/ambiguous name on DOS. */
+        if (c == ' '  || c == '"' || c == '*' || c == '+' || c == ','
+         || c == '/'  || c == ':' || c == ';' || c == '<' || c == '='
+         || c == '>'  || c == '?' || c == '[' || c == '\\' || c == ']'
+         || c == '|') return 1;
         if (c == '.') {
             stem_len = i;
             break;
