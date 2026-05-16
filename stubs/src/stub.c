@@ -107,6 +107,7 @@ int main(int argc, char **argv)
     }
 
     self_size = lseek(self, 0L, SEEK_END);
+    if (self_size == -1L) die("seek end");
     if (self_size < (long)TRAILER_SIZE) die("truncated");
 
     if (lseek(self, -(long)TRAILER_SIZE, SEEK_END) == -1L) die("seek trailer");

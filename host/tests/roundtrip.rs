@@ -42,7 +42,8 @@ fn pack_then_unpack_is_byte_identical() {
     unpack
         .arg("unpack")
         .arg(&exe)
-        .args(["-d", extracted.to_str().unwrap()]);
+        .arg("-d")
+        .arg(&extracted);
     let status = unpack.status().unwrap();
     assert!(status.success(), "unpack failed");
 

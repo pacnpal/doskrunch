@@ -258,7 +258,12 @@ impl Archive {
         // total. A hostile producer can still lie about the total, but
         // it can't make us pre-allocate more than the total it claims.
         let mut budget = total_c as u64;
-        let mut files = Vec::with_capacity(file_count as usize);
+        // Cap the initial allocation. file_count is u16 so the absolute
+        // ceiling is 65535 entries (~4 MiB of FileEntry slots), but a
+        // hostile header could claim that without any real data behind
+        // it. Start small; push() grows naturally if the bytes follow.
+        let prealloc = std::cmp::min(file_count as usize, 256);
+        let mut files = Vec::with_capacity(prealloc);
         for _ in 0..file_count {
             files.push(read_file(r, &mut budget)?);
         }
@@ -328,7 +333,13 @@ fn read_file<R: Read>(r: &mut R, budget: &mut u64) -> Result<FileEntry, ArchiveE
     r.read_exact(&mut cc)?;
     let chunk_count = u16::from_le_bytes(cc);
 
-    let mut chunks = Vec::with_capacity(chunk_count as usize);
+    // chunk_count is u16 (max 65535 ≈ 2 MiB of Chunk slots). Each chunk
+    // consumes at least 4 bytes on disk (csize+usize) so the budget
+    // bounds it; cap the prealloc anyway so a hostile header can't
+    // force a 2 MiB up-front allocation when the body is tiny.
+    let max_from_budget = (*budget / 4 + 1) as usize;
+    let prealloc = std::cmp::min(chunk_count as usize, std::cmp::min(max_from_budget, 256));
+    let mut chunks = Vec::with_capacity(prealloc);
     let mut sum_u: u32 = 0;
     for _ in 0..chunk_count {
         let mut cs = [0u8; 2];

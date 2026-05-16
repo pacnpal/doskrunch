@@ -102,6 +102,29 @@ mod tests {
         assert!(safe_basename("HELLO.TXT").is_ok());
         assert!(safe_basename("README").is_ok());
     }
+
+    #[test]
+    fn load_archive_rejects_trailer_offset_past_eof() {
+        use crate::archive::{write_trailer, TRAILER_MAGIC};
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(tmp.path())
+            .unwrap();
+        // 8-byte payload + 8-byte trailer; offset 9999 is way past EOF.
+        use std::io::Write;
+        f.write_all(&[0u8; 8]).unwrap();
+        write_trailer(&mut f, 9999).unwrap();
+        drop(f);
+        let err = super::load_archive(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("past end-of-file"),
+            "got: {err}"
+        );
+        // touch the trailer magic to keep it referenced; suppresses an
+        // unused-import warning in builds without the regression test.
+        let _ = TRAILER_MAGIC;
+    }
 }
 
 pub fn load_archive(path: &Path) -> Result<Archive> {
@@ -115,6 +138,18 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
     f.read_exact(&mut tail)?;
     let archive_offset = read_trailer(&tail)
         .map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e))?;
+    // The DKCH header is at least 25 bytes (4 magic + 17 fields + 4 crc),
+    // so anything pointing past `total - TRAILER_SIZE` can't possibly
+    // hold a valid header. Catch this here for a clearer error than
+    // EOF mid-parse.
+    if (archive_offset as u64) + (TRAILER_SIZE as u64) > total {
+        bail!(
+            "{}: archive offset {} points past end-of-file ({} bytes)",
+            path.display(),
+            archive_offset,
+            total
+        );
+    }
     f.seek(SeekFrom::Start(archive_offset as u64))?;
     let archive =
         Archive::read(&mut f).map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e))?;
