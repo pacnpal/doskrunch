@@ -1,0 +1,2 @@
+hello dos world
+this is a test fixture for doskrunch phase 1
