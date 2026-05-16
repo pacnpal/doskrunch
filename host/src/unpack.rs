@@ -46,15 +46,24 @@ fn safe_basename(name: &str) -> Result<&str> {
     if name.starts_with('.') {
         bail!("archive entry name '{}' has a leading dot", name);
     }
+    // Windows trims trailing dots and spaces, so "CON.", "CON ", "NUL  "
+    // all resolve to the same reserved device. Reject either as input.
+    if name.ends_with('.') || name.ends_with(' ') {
+        bail!(
+            "archive entry name '{}' has trailing dot/space (would resolve to a device on Windows)",
+            name
+        );
+    }
     // Windows reserved device names — opening these can hang or write
     // to a device instead of a file. Compare on the stem before the
-    // first dot, case-insensitively.
+    // first dot, case-insensitively, after trimming trailing dots/spaces.
     const RESERVED: &[&str] = &[
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    let stem = name.split('.').next().unwrap_or(name);
+    let trimmed = name.trim_end_matches(|c: char| c == '.' || c == ' ');
+    let stem = trimmed.split('.').next().unwrap_or(trimmed);
     for r in RESERVED {
         if stem.eq_ignore_ascii_case(r) {
             bail!("archive entry name '{}' is a reserved device name", name);
@@ -77,6 +86,13 @@ mod tests {
     #[test]
     fn rejects_reserved_device_names() {
         for bad in &["CON", "con", "Nul", "COM1.TXT", "lpt9.dat", "AUX"] {
+            assert!(safe_basename(bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn rejects_trailing_dot_or_space() {
+        for bad in &["CON.", "CON ", "NUL  ", "LPT1.", "FILE."] {
             assert!(safe_basename(bad).is_err(), "should reject {bad}");
         }
     }

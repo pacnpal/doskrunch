@@ -72,7 +72,13 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             .and_then(|n| n.to_str())
             .with_context(|| format!("non-utf8 filename: {}", src.display()))?;
         let (mangled, was_mangled) = mangle(src_name);
-        let final_name = dedupe(&mangled, &used);
+        let final_name = dedupe(&mangled, &used).with_context(|| {
+            format!(
+                "{}: exhausted the ~1..~9999 suffix space for stem '{}'",
+                src.display(),
+                mangled
+            )
+        })?;
         if was_mangled || final_name != src_name.to_ascii_uppercase() {
             eprintln!(
                 "warning: '{}' stored as '{}' (8.3 mangling)",

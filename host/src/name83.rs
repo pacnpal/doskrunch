@@ -56,10 +56,12 @@ pub fn mangle(src: &str) -> (String, bool) {
     (name, was_mangled)
 }
 
-/// Resolve a collision by appending `~N` (DOS-style) to the stem.
-pub fn dedupe(name: &str, used: &HashSet<String>) -> String {
+/// Resolve a collision by appending `~N` (DOS-style) to the stem. Returns
+/// `None` when every `~1`..`~9999` suffix on this stem is already taken;
+/// callers should fail the pack rather than silently overwriting.
+pub fn dedupe(name: &str, used: &HashSet<String>) -> Option<String> {
     if !used.contains(name) {
-        return name.to_string();
+        return Some(name.to_string());
     }
     let (stem, ext) = match name.rfind('.') {
         Some(i) => (&name[..i], &name[i..]),
@@ -67,16 +69,14 @@ pub fn dedupe(name: &str, used: &HashSet<String>) -> String {
     };
     for n in 1u32..=9999 {
         let suffix = format!("~{n}");
-        // DOS-style: stem truncated so stem+suffix fits in 8 chars.
         let keep = 8usize.saturating_sub(suffix.len());
         let trimmed: String = stem.chars().take(keep).collect();
         let candidate = format!("{trimmed}{suffix}{ext}");
         if !used.contains(&candidate) {
-            return candidate;
+            return Some(candidate);
         }
     }
-    // Unreachable in practice.
-    name.to_string()
+    None
 }
 
 #[cfg(test)]
@@ -115,8 +115,7 @@ mod tests {
     fn dedupe_inserts_tilde() {
         let mut used = HashSet::new();
         used.insert("README.TXT".to_string());
-        // README is 6 chars, ~1 is 2 — fits in 8, so no truncation.
-        let d = dedupe("README.TXT", &used);
+        let d = dedupe("README.TXT", &used).unwrap();
         assert_eq!(d, "README~1.TXT");
     }
 
@@ -125,7 +124,7 @@ mod tests {
         let mut used = HashSet::new();
         used.insert("README.TXT".to_string());
         used.insert("README~1.TXT".to_string());
-        let d = dedupe("README.TXT", &used);
+        let d = dedupe("README.TXT", &used).unwrap();
         assert_eq!(d, "README~2.TXT");
     }
 
@@ -133,8 +132,20 @@ mod tests {
     fn dedupe_truncates_long_stem() {
         let mut used = HashSet::new();
         used.insert("ABCDEFGH.TXT".to_string());
-        let d = dedupe("ABCDEFGH.TXT", &used);
-        // Keep 6 chars of stem to fit "~1" inside 8.
+        let d = dedupe("ABCDEFGH.TXT", &used).unwrap();
         assert_eq!(d, "ABCDEF~1.TXT");
+    }
+
+    #[test]
+    fn dedupe_returns_none_when_exhausted() {
+        let mut used = HashSet::new();
+        used.insert("AB.TXT".to_string());
+        for n in 1..=9999 {
+            let suffix = format!("~{n}");
+            let keep = 8 - suffix.len();
+            let trimmed: String = "AB".chars().take(keep).collect();
+            used.insert(format!("{trimmed}{suffix}.TXT"));
+        }
+        assert!(dedupe("AB.TXT", &used).is_none());
     }
 }
