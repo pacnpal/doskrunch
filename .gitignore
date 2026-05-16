@@ -1,0 +1,10 @@
+target/
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+*.swp
+*.swo
+tests/integration/work/
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
