@@ -33,9 +33,11 @@
 //!     archive_offset          u32  (offset from file start to the DKCH header)
 //! ```
 //!
-//! The host writes a fresh MZ header + stub blob first, then this archive,
-//! then the trailer. The stub finds the archive by seeking to EOF-8, reading
-//! the trailer, and jumping to `archive_offset`.
+//! The host starts from a prebuilt stub blob (already a complete MZ .EXE,
+//! embedded via `include_bytes!`), then appends this archive followed by
+//! the trailer — the MZ header is never regenerated. The stub finds the
+//! archive by seeking to EOF-8, reading the trailer, and jumping to
+//! `archive_offset`.
 
 use std::io::{self, Read, Write};
 
