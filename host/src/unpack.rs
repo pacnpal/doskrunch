@@ -16,9 +16,19 @@ pub fn unpack(opts: UnpackOptions) -> Result<()> {
     fs::create_dir_all(&opts.dest)
         .with_context(|| format!("create {}", opts.dest.display()))?;
 
+    // Track collisions case-insensitively so two entries differing only
+    // by case can't silently overwrite each other on Windows/macOS.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in &archive.files {
         let stored = entry.display_name();
         let safe = safe_basename(&stored)?;
+        let key = safe.to_ascii_uppercase();
+        if !seen.insert(key) {
+            bail!(
+                "duplicate archive entry '{}' (case-insensitive collision)",
+                safe
+            );
+        }
         let out = opts.dest.join(safe);
         write_entry(&out, entry, archive.algorithm)?;
     }

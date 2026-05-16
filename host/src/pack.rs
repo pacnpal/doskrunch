@@ -46,8 +46,14 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // Detect the committed placeholder (256 bytes; MZ header + zero
     // padding) so users don't ship a non-runnable .EXE without
     // noticing. A real Watcom-built stub is several KB and has
-    // executable bytes beyond the MZ header.
-    if stub.len() <= 512 && stub[28..].iter().all(|&b| b == 0) {
+    // executable bytes beyond the MZ header. `.get` keeps this
+    // defensive against truncated blobs that still start with `MZ`.
+    if stub.len() <= 512
+        && stub
+            .get(28..)
+            .map(|tail| tail.iter().all(|&b| b == 0))
+            .unwrap_or(true)
+    {
         eprintln!(
             "warning: stub blob for ({}, {}) looks like the placeholder \
              (MZ header + zero padding). The resulting .EXE will not run \
