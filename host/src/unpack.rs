@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn load_archive_rejects_trailer_offset_past_eof() {
-        use crate::archive::{write_trailer, TRAILER_MAGIC};
+        use crate::archive::write_trailer;
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -137,9 +137,6 @@ mod tests {
             err.to_string().contains("past end-of-file"),
             "got: {err}"
         );
-        // touch the trailer magic to keep it referenced; suppresses an
-        // unused-import warning in builds without the regression test.
-        let _ = TRAILER_MAGIC;
     }
 }
 

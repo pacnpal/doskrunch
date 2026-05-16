@@ -88,6 +88,67 @@ static u32 rd_u32(const u8 *p)
          | ((u32)p[3] << 24);
 }
 
+/* Case-insensitive equality against an upper-case literal. `lit` must
+ * be ASCII upper-case; `s` is the name stem we're checking. */
+static int ieq_upper(const char *s, unsigned slen, const char *lit)
+{
+    unsigned i;
+    for (i = 0; i < slen; i++) {
+        char c = s[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if (lit[i] == '\0' || c != lit[i]) return 0;
+    }
+    return lit[slen] == '\0';
+}
+
+/* Reject names that aren't strict 8.3 ASCII basenames, contain path
+ * separators or NUL, look like DOS device names (CON/PRN/AUX/NUL,
+ * COM1..9, LPT1..9), or have leading dots / trailing dot or space.
+ * `s` is NUL-terminated; `slen` is the strlen, computed by caller.
+ * Returns 0 on accept, nonzero on reject. */
+static int validate_name(const char *s, unsigned slen)
+{
+    unsigned i;
+    unsigned stem_len = 0;
+    static const char *RESERVED[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5",
+        "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+        "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    if (slen == 0 || slen > 12) return 1;
+    if (s[0] == '.') return 1;
+    if (s[slen - 1] == '.' || s[slen - 1] == ' ') return 1;
+    for (i = 0; i < slen; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c >= 0x80) return 1;
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?'
+         || c == '"' || c == '<' || c == '>' || c == '|') return 1;
+        if (c == '.') {
+            stem_len = i;
+            break;
+        }
+    }
+    if (i == slen) stem_len = slen;
+    if (stem_len == 0 || stem_len > 8) return 1;
+    /* If there's a dot, the rest is the extension. Length <= 3, no
+     * additional dots. */
+    if (i < slen) {
+        unsigned ext_len = slen - i - 1;
+        unsigned j;
+        if (ext_len > 3) return 1;
+        for (j = i + 1; j < slen; j++) {
+            if (s[j] == '.') return 1;
+        }
+    }
+    /* DOS device name check on the upper-cased stem. */
+    for (i = 0; i < sizeof(RESERVED) / sizeof(RESERVED[0]); i++) {
+        if (ieq_upper(s, stem_len, RESERVED[i])) return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int self;
@@ -155,7 +216,15 @@ int main(int argc, char **argv)
          * minimum valid length is 2 (one char + NUL). */
         if (name_len < 2 || name_len >= sizeof(namebuf)) die("bad name length");
         if (read_exact(self, namebuf, name_len) != 0) die("read name");
-        namebuf[name_len] = '\0';
+        /* Spec says the trailing NUL is INSIDE name_len; require it
+         * and treat the rest as a strict 8.3 ASCII basename. Defends
+         * against a hostile archive smuggling "..\\AUTOEXEC.BAT" or
+         * "CON" past the host validator. */
+        if (namebuf[name_len - 1] != '\0') die("name not nul-terminated");
+        namebuf[sizeof(namebuf) - 1] = '\0';
+        if (validate_name(namebuf, (unsigned)(name_len - 1)) != 0) {
+            die("unsafe name");
+        }
         if (read_exact(self, &attrs, 1) != 0) die("read attrs");
         if (read_exact(self, ts_b, 4) != 0)   die("read ts");
         ts = rd_u32(ts_b);
