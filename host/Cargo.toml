@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Cross-platform CLI that produces self-extracting DOS .EXE/.COM files with CPU-tier-optimized decompressors."
+description = "Cross-platform CLI that produces self-extracting DOS .EXE files with CPU-tier-optimized decompressors. (.COM output planned for a later phase.)"
 
 [[bin]]
 name = "doskrunch"

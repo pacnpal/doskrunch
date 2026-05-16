@@ -430,9 +430,10 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
                     "control character",
                 ));
             }
-            // `b'.'` is permitted exactly once (enforced below) but
-            // sits inside the mangler's ILLEGAL set, so handle the
-            // dot explicitly here before the illegal-set check.
+            // `b'.'` is permitted exactly once (the 8.3 separator);
+            // handle it before the illegal-set check below so the
+            // separator isn't accidentally caught by a future
+            // tightening of the FAT illegal set.
             b'.' => {}
             // Mirror the mangler's illegal-byte set (also covers the
             // Windows-illegal characters `* ? " < > |`) so parse-time
