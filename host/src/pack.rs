@@ -41,6 +41,13 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         archive.flags |= flags::REPRODUCIBLE;
     }
 
+    if opts.inputs.len() > u16::MAX as usize {
+        bail!(
+            "too many input files ({}); archive header file_count is u16",
+            opts.inputs.len()
+        );
+    }
+
     let mut used: HashSet<String> = HashSet::new();
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     for src in &opts.inputs {
@@ -94,6 +101,23 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         archive.files.push(entry);
     }
 
+    // Cumulative size must fit in the u32 header fields. DOS lseek is
+    // signed 32-bit, so the whole .EXE must also fit in 2 GiB (i32::MAX).
+    let mut total_u: u64 = 0;
+    let mut total_c: u64 = 0;
+    for f in &archive.files {
+        total_u += f.uncompressed_size() as u64;
+        total_c += f.compressed_size() as u64;
+    }
+    if total_u > u32::MAX as u64 || total_c > u32::MAX as u64 {
+        bail!(
+            "archive payload exceeds 4 GiB (uncompressed {} / compressed {})",
+            total_u,
+            total_c
+        );
+    }
+    // i32::MAX accounts for the stub + archive + trailer; checked again
+    // in write_sfx once we know the exact archive byte size.
     write_sfx(&opts.output, stub, &archive)?;
     Ok(())
 }
@@ -104,6 +128,15 @@ fn write_sfx(out: &Path, stub: &[u8], archive: &Archive) -> Result<()> {
     let archive_offset: u32 = stub.len().try_into().context("stub larger than 4 GiB")?;
     archive.write(&mut f)?;
     crate::archive::write_trailer(&mut f, archive_offset)?;
+    let total = f.metadata()?.len();
+    // DOS lseek is signed 32-bit, so the stub can't reach past 2 GiB
+    // even though the archive header's u32 fields could express more.
+    if total > i32::MAX as u64 {
+        bail!(
+            "output .EXE is {} bytes; DOS lseek caps at 2 GiB",
+            total
+        );
+    }
     f.sync_all()?;
     Ok(())
 }

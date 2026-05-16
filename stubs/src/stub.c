@@ -144,10 +144,11 @@ int main(int argc, char **argv)
 
         if (read_exact(self, &name_len_b, 1) != 0) die("read name len");
         name_len = name_len_b;
-        if (name_len == 0 || name_len > sizeof(namebuf)) die("bad name length");
+        /* Need room for an explicit NUL: the host writes one inside
+         * name_len, but a corrupted archive might not. >= leaves room. */
+        if (name_len == 0 || name_len >= sizeof(namebuf)) die("bad name length");
         if (read_exact(self, namebuf, name_len) != 0) die("read name");
-        /* Host stores the trailing NUL inside name_len, so namebuf is
-         * already C-string-safe. */
+        namebuf[name_len] = '\0';
         if (read_exact(self, &attrs, 1) != 0) die("read attrs");
         if (read_exact(self, ts_b, 4) != 0)   die("read ts");
         ts = rd_u32(ts_b);
