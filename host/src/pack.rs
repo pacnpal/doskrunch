@@ -73,6 +73,14 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             .and_then(|n| n.to_str())
             .with_context(|| format!("non-utf8 filename: {}", src.display()))?;
         let (mangled, _was_mangled) = mangle(src_name);
+        if is_dos_reserved(&mangled) {
+            bail!(
+                "{}: mangles to '{}', a reserved DOS device name; \
+                 rename the source file (e.g. add a prefix) and retry.",
+                src.display(),
+                mangled
+            );
+        }
         prelim.push((mangled, src.clone(), meta));
     }
 
@@ -150,6 +158,19 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     Ok(())
 }
 
+/// Return true if a mangled 8.3 name corresponds to a DOS/Windows
+/// reserved device (CON/PRN/AUX/NUL/COM1..9/LPT1..9). Compared on the
+/// upper-ASCII stem (everything before the first dot).
+fn is_dos_reserved(mangled: &str) -> bool {
+    const DOS_RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stem = mangled.split('.').next().unwrap_or(mangled);
+    DOS_RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
+
 fn write_sfx(out: &Path, stub: &[u8], archive: &Archive) -> Result<()> {
     let mut f = fs::File::create(out).with_context(|| format!("create {}", out.display()))?;
     f.write_all(stub)?;
@@ -210,5 +231,23 @@ mod tests {
         };
         let err = pack(opts).unwrap_err();
         assert!(err.to_string().contains("not a regular file"));
+    }
+
+    #[test]
+    fn rejects_reserved_device_input_name() {
+        let td = tempfile::tempdir().unwrap();
+        let input = make_input(td.path(), "con.txt", b"x");
+        let opts = PackOptions {
+            output: td.path().join("o.exe"),
+            inputs: vec![input],
+            algorithm: Algorithm::Stored,
+            target: TargetTier::I8086,
+            preserve_timestamps: false,
+        };
+        let err = pack(opts).unwrap_err();
+        assert!(
+            err.to_string().contains("reserved DOS device name"),
+            "got: {err}"
+        );
     }
 }

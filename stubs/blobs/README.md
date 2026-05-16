@@ -10,9 +10,9 @@ crate stays buildable without the Watcom toolchain installed locally.
 Phase 1: `stored_8086.bin` ships first.
 
 Until the Watcom Docker build runs in CI, this directory contains a
-syntactically-valid but non-functional placeholder: a minimal MZ header
-followed by zero padding. The host `pack` command refuses to write an
-SFX from a non-MZ stub, so the placeholder keeps host tests honest
-while still failing fast if someone tries to build a real SFX with it.
-Replace `stored_8086.bin` with the Watcom-built blob to get a runnable
-.EXE.
+non-functional placeholder: a minimal MZ header followed by zero
+padding. The host `pack` checks for the MZ magic, so the placeholder
+is accepted and host-side roundtrip tests work, **but the resulting
+.EXE is not runnable on DOS** — there is no decoder code behind the
+MZ header. Replace `stored_8086.bin` with the Watcom-built blob to
+get a runnable SFX.

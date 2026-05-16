@@ -134,12 +134,23 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
             }
         );
     }
-    // Cap the prealloc so a hostile archive can't trigger huge allocs.
-    // 16 MiB matches what a single u16-bounded chunk can produce in
-    // realistic Phase 1 packs.
+    // Phase 1 hard cap on per-file uncompressed size. The current unpack
+    // path builds the whole file in memory; streaming lands in Phase 4
+    // along with chunked extraction (PLAN.md §10). Until then, refuse
+    // to materialise more than 256 MiB per entry — well above any
+    // realistic Phase 1 fixture, far below OOM territory.
+    const MAX_UNCOMPRESSED: u32 = 256 * 1024 * 1024;
     let total = entry.uncompressed_size();
-    let prealloc = std::cmp::min(total as usize, 16 * 1024 * 1024);
-    let mut data = Vec::with_capacity(prealloc);
+    if total > MAX_UNCOMPRESSED {
+        bail!(
+            "{}: declared uncompressed size {} exceeds the phase-1 unpack cap ({} bytes); \
+             this lands in phase 4 with streaming extraction.",
+            entry.display_name(),
+            total,
+            MAX_UNCOMPRESSED
+        );
+    }
+    let mut data = Vec::with_capacity(total as usize);
     for c in &entry.chunks {
         if c.data.len() != c.uncompressed_size as usize {
             bail!(
