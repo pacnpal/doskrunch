@@ -410,10 +410,10 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
     }
     for &b in body {
         match b {
-            0 | b'/' | b'\\' | b':' => {
+            0 => {
                 return Err(ArchiveError::InvalidName(
                     String::from_utf8_lossy(body).into_owned(),
-                    "path separator or embedded NUL",
+                    "embedded NUL",
                 ));
             }
             b if b >= 0x80 => {
@@ -426,6 +426,19 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
                 return Err(ArchiveError::InvalidName(
                     String::from_utf8_lossy(body).into_owned(),
                     "control character",
+                ));
+            }
+            // `b'.'` is permitted exactly once (enforced below) but
+            // sits inside the mangler's ILLEGAL set, so handle the
+            // dot explicitly here before the illegal-set check.
+            b'.' => {}
+            // Mirror the mangler's illegal-byte set (also covers the
+            // Windows-illegal characters `* ? " < > |`) so parse-time
+            // validation aligns with what `pack` is willing to emit.
+            b if crate::name83::ILLEGAL.contains(&b) => {
+                return Err(ArchiveError::InvalidName(
+                    String::from_utf8_lossy(body).into_owned(),
+                    "illegal FAT 8.3 character",
                 ));
             }
             _ => {}

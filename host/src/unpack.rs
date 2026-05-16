@@ -38,8 +38,17 @@ fn safe_basename(name: &str) -> Result<&str> {
     }
     for b in name.bytes() {
         match b {
-            b'/' | b'\\' | 0 => bail!("archive entry name '{}' contains path separator or NUL", name),
+            0 => bail!("archive entry name '{}' contains NUL", name),
             b if b < 0x20 => bail!("archive entry name '{}' contains control character", name),
+            // `.` and `:` show up in legitimate basenames (extension /
+            // ... well, `:` doesn't, but it's listed below). Treat the
+            // dot as legal here; the mangler's full illegal set covers
+            // the rest including path separators and Windows-illegal
+            // characters (`* ? " < > | / \ :`).
+            b'.' => {}
+            b if crate::name83::ILLEGAL.contains(&b) => {
+                bail!("archive entry name '{}' contains an illegal FAT 8.3 character", name)
+            }
             _ => {}
         }
     }
@@ -101,6 +110,13 @@ mod tests {
     fn accepts_plain_8_3() {
         assert!(safe_basename("HELLO.TXT").is_ok());
         assert!(safe_basename("README").is_ok());
+    }
+
+    #[test]
+    fn rejects_windows_illegal_chars() {
+        for bad in &["a*b.txt", "a?b.txt", "a\"b", "a<b", "a>b", "a|b", "a:b"] {
+            assert!(safe_basename(bad).is_err(), "should reject {bad}");
+        }
     }
 
     #[test]

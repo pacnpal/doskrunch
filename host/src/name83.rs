@@ -8,7 +8,11 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-const ILLEGAL: &[u8] = b" \"*+,/:;<=>?[\\]|";
+/// Byte values forbidden in a FAT 8.3 basename (also covers the
+/// Windows-illegal set `* ? " < > |`, so unpack and parse-time
+/// validators can reuse this and stay aligned with what the mangler
+/// emits.
+pub const ILLEGAL: &[u8] = b" \"*+,/:;<=>?[\\]|";
 
 fn sanitize_part(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(max);
