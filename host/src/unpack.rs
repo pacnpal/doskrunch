@@ -127,11 +127,25 @@ mod tests {
     }
 }
 
+/// Phase 1 hard cap on input SFX size. `Archive::read` builds the
+/// whole archive in memory; the per-file cap in `write_entry` runs too
+/// late to bound the parse-time footprint. Streaming parse lands in
+/// Phase 4 alongside chunked extraction.
+const MAX_INPUT_SFX_BYTES: u64 = 512 * 1024 * 1024;
+
 pub fn load_archive(path: &Path) -> Result<Archive> {
     let mut f = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let total = f.metadata()?.len();
     if total < TRAILER_SIZE as u64 {
         bail!("{}: too small to contain a doskrunch trailer", path.display());
+    }
+    if total > MAX_INPUT_SFX_BYTES {
+        bail!(
+            "{}: input SFX is {} bytes; phase-1 unpack caps at {} (streaming parse lands in phase 4)",
+            path.display(),
+            total,
+            MAX_INPUT_SFX_BYTES
+        );
     }
     f.seek(SeekFrom::End(-(TRAILER_SIZE as i64)))?;
     let mut tail = [0u8; TRAILER_SIZE];

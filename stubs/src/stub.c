@@ -151,7 +151,9 @@ int main(int argc, char **argv)
         name_len = name_len_b;
         /* Need room for an explicit NUL: the host writes one inside
          * name_len, but a corrupted archive might not. >= leaves room. */
-        if (name_len == 0 || name_len >= sizeof(namebuf)) die("bad name length");
+        /* PLAN.md §8: name_len INCLUDES the trailing NUL, so the
+         * minimum valid length is 2 (one char + NUL). */
+        if (name_len < 2 || name_len >= sizeof(namebuf)) die("bad name length");
         if (read_exact(self, namebuf, name_len) != 0) die("read name");
         namebuf[name_len] = '\0';
         if (read_exact(self, &attrs, 1) != 0) die("read attrs");
