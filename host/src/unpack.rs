@@ -62,7 +62,7 @@ fn safe_basename(name: &str) -> Result<&str> {
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    let trimmed = name.trim_end_matches(|c: char| c == '.' || c == ' ');
+    let trimmed = name.trim_end_matches(['.', ' ']);
     let stem = trimmed.split('.').next().unwrap_or(trimmed);
     for r in RESERVED {
         if stem.eq_ignore_ascii_case(r) {

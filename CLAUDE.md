@@ -73,7 +73,7 @@ On by default: timestamps zeroed, file entries sorted lexicographically by store
 
 ## DOSBox-X integration tests
 
-CI uses headless DOSBox-X with `cpu_type=` set per tier. See `tests/integration/`. Each test pins a `cpu_type` (`8086`, `386`, `pentium_mmx`) and a `memsize`. Locally, run `cargo test --test integration -- --ignored` if DOSBox-X is installed.
+Planned for Phase 1 completion (not yet wired up): headless DOSBox-X with `cpu_type=` pinned per tier (`8086`, `386`, `pentium_mmx`) and a fixed `memsize`, run from CI. Once added under `tests/integration/`, run them locally with `cargo test --test integration -- --ignored` when DOSBox-X is installed.
 
 ## Phase status
 

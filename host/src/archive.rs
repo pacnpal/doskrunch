@@ -449,6 +449,30 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
             "reserved name",
         ));
     }
+    // Trailing dot/space — Windows treats `CON.` and `CON ` as the same
+    // device. Reject at parse time so hostile archives can't slip past
+    // the unpack-side check.
+    if body.ends_with(b".") || body.ends_with(b" ") {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(body).into_owned(),
+            "trailing dot or space",
+        ));
+    }
+    // DOS reserved device basenames. Compare on the upper-ASCII stem
+    // (everything before the first dot), matching the unpack-side check.
+    const DOS_RESERVED: &[&[u8]] = &[
+        b"CON", b"PRN", b"AUX", b"NUL",
+        b"COM1", b"COM2", b"COM3", b"COM4", b"COM5", b"COM6", b"COM7", b"COM8", b"COM9",
+        b"LPT1", b"LPT2", b"LPT3", b"LPT4", b"LPT5", b"LPT6", b"LPT7", b"LPT8", b"LPT9",
+    ];
+    let stem_lower = body.split(|&b| b == b'.').next().unwrap_or(body);
+    let stem_upper: Vec<u8> = stem_lower.iter().map(|b| b.to_ascii_uppercase()).collect();
+    if DOS_RESERVED.iter().any(|r| *r == stem_upper.as_slice()) {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(body).into_owned(),
+            "reserved DOS device name",
+        ));
+    }
     Ok(())
 }
 
@@ -705,6 +729,37 @@ mod tests {
             let mut r = std::io::Cursor::new(&buf);
             let err = Archive::read(&mut r).unwrap_err();
             assert!(matches!(err, ArchiveError::InvalidName(_, _)), "expected InvalidName for {bad:?}, got {err:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_dos_reserved_and_trailing_dot_or_space() {
+        for bad in [
+            &b"CON\0"[..],
+            &b"con\0"[..],
+            &b"NUL.TXT\0"[..],
+            &b"COM1.DAT\0"[..],
+            &b"lpt9\0"[..],
+            &b"PRN\0"[..],
+            &b"FILE.\0"[..],
+            &b"FILE \0"[..],
+        ] {
+            let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+            a.files = vec![FileEntry {
+                name: bad.to_vec(),
+                attrs: 0x20,
+                timestamp: 0,
+                chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+                crc32: crc32fast::hash(&[]),
+            }];
+            let mut buf = Vec::new();
+            a.write(&mut buf).unwrap();
+            let mut r = std::io::Cursor::new(&buf);
+            let err = Archive::read(&mut r).unwrap_err();
+            assert!(
+                matches!(err, ArchiveError::InvalidName(_, _)),
+                "expected InvalidName for {bad:?}, got {err:?}"
+            );
         }
     }
 
