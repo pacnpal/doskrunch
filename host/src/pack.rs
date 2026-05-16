@@ -56,8 +56,9 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         );
     }
 
-    let mut used: HashSet<String> = HashSet::new();
-    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    // Pass 1: stat + mangle. Collect (mangled, source path, metadata) before
+    // any dedupe so we can reorder deterministically.
+    let mut prelim: Vec<(String, PathBuf, fs::Metadata)> = Vec::with_capacity(opts.inputs.len());
     for src in &opts.inputs {
         let meta = fs::metadata(src)
             .with_context(|| format!("stat {}", src.display()))?;
@@ -71,7 +72,25 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             .file_name()
             .and_then(|n| n.to_str())
             .with_context(|| format!("non-utf8 filename: {}", src.display()))?;
-        let (mangled, was_mangled) = mangle(src_name);
+        let (mangled, _was_mangled) = mangle(src_name);
+        prelim.push((mangled, src.clone(), meta));
+    }
+
+    // Reproducible default: sort by mangled name BEFORE dedupe so two
+    // invocations with the same set of inputs (any argv order) resolve
+    // collisions identically. Tie-break on the source path so distinct
+    // sources that mangle to the same name still order deterministically.
+    if !opts.preserve_timestamps {
+        prelim.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    }
+
+    let mut used: HashSet<String> = HashSet::new();
+    let mut entries: Vec<(String, PathBuf, fs::Metadata)> = Vec::with_capacity(prelim.len());
+    for (mangled, src, meta) in prelim {
+        let src_name = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         let final_name = dedupe(&mangled, &used).with_context(|| {
             format!(
                 "{}: exhausted the ~1..~9999 suffix space for stem '{}'",
@@ -79,25 +98,19 @@ pub fn pack(opts: PackOptions) -> Result<()> {
                 mangled
             )
         })?;
-        if was_mangled || final_name != src_name.to_ascii_uppercase() {
+        if final_name != src_name.to_ascii_uppercase() {
             eprintln!(
                 "warning: '{}' stored as '{}' (8.3 mangling)",
                 src_name, final_name
             );
         }
         used.insert(final_name.clone());
-        entries.push((final_name, src.clone()));
+        entries.push((final_name, src, meta));
     }
 
-    // Reproducible default: sort lexicographically by stored name.
-    if !opts.preserve_timestamps {
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-    }
-
-    for (stored_name, src) in entries {
+    for (stored_name, src, meta) in entries {
         let data = fs::read(&src).with_context(|| format!("read {}", src.display()))?;
         let timestamp = if opts.preserve_timestamps {
-            let meta = fs::metadata(&src)?;
             let mtime_secs = meta
                 .modified()
                 .ok()

@@ -375,8 +375,10 @@ fn read_file<R: Read>(r: &mut R, budget: &mut u64) -> Result<FileEntry, ArchiveE
     })
 }
 
-/// Reject names that aren't NUL-terminated 8.3-ish ASCII basenames.
-/// First line of defense before unpack tries to materialize the path.
+/// Reject names that aren't NUL-terminated 8.3 ASCII basenames.
+/// PLAN.md §8 specifies "8.3 ASCII"; enforce that at parse time so
+/// hostile archives can't smuggle non-ASCII or oversize basenames into
+/// `unpack`'s extraction paths.
 fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
     if name.last() != Some(&0) {
         return Err(ArchiveError::InvalidName(
@@ -388,12 +390,25 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
     if body.is_empty() {
         return Err(ArchiveError::EmptyFileName);
     }
+    // 8.3 = up to 8 chars, optional ".", up to 3 chars = 12 max.
+    if body.len() > 12 {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(body).into_owned(),
+            "longer than 8.3",
+        ));
+    }
     for &b in body {
         match b {
             0 | b'/' | b'\\' | b':' => {
                 return Err(ArchiveError::InvalidName(
                     String::from_utf8_lossy(body).into_owned(),
                     "path separator or embedded NUL",
+                ));
+            }
+            b if b >= 0x80 => {
+                return Err(ArchiveError::InvalidName(
+                    String::from_utf8_lossy(body).into_owned(),
+                    "non-ASCII byte",
                 ));
             }
             b if b < 0x20 => {
@@ -404,6 +419,29 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
             }
             _ => {}
         }
+    }
+    // Enforce the 8.3 stem/ext lengths. Multiple dots are rejected.
+    let dot_count = body.iter().filter(|&&b| b == b'.').count();
+    if dot_count > 1 {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(body).into_owned(),
+            "more than one dot",
+        ));
+    }
+    if let Some(dot) = body.iter().position(|&b| b == b'.') {
+        let stem = &body[..dot];
+        let ext = &body[dot + 1..];
+        if stem.is_empty() || stem.len() > 8 || ext.len() > 3 {
+            return Err(ArchiveError::InvalidName(
+                String::from_utf8_lossy(body).into_owned(),
+                "stem/ext lengths violate 8.3",
+            ));
+        }
+    } else if body.len() > 8 {
+        return Err(ArchiveError::InvalidName(
+            String::from_utf8_lossy(body).into_owned(),
+            "stem longer than 8",
+        ));
     }
     if body == b".." || body == b"." {
         return Err(ArchiveError::InvalidName(
@@ -613,6 +651,42 @@ mod tests {
         let mut buf = Vec::new();
         write_trailer(&mut buf, 0xdead_beef).unwrap();
         assert_eq!(read_trailer(&buf).unwrap(), 0xdead_beef);
+    }
+
+    #[test]
+    fn rejects_non_ascii_name() {
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        // 0xC3 0xA9 = 'é'; the parser must reject non-ASCII bytes.
+        a.files = vec![FileEntry {
+            name: vec![b'A', 0xC3, 0xA9, 0],
+            attrs: 0x20,
+            timestamp: 0,
+            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            crc32: crc32fast::hash(&[]),
+        }];
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidName(_, _)));
+    }
+
+    #[test]
+    fn rejects_oversized_8_3_name() {
+        // 9-char stem (> 8) with no extension.
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.files = vec![FileEntry {
+            name: b"AAAAAAAAA\0".to_vec(),
+            attrs: 0x20,
+            timestamp: 0,
+            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            crc32: crc32fast::hash(&[]),
+        }];
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidName(_, _)));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! 8.3 filename mangling for FAT.
 //!
 //! Phase 1 mangles aggressively: uppercase, strip illegal chars, truncate
-//! to 8.3, collision-rename with `~N` suffix. Phase 4 will warn on stderr
-//! when mangling happens; we keep the API ready for that.
+//! to 8.3, collision-rename with `~N` suffix. `pack` emits a single-line
+//! stderr warning whenever the stored name differs from the uppercased
+//! source name.
 
 use std::collections::HashSet;
 use std::path::Path;

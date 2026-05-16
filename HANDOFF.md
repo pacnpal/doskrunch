@@ -51,8 +51,10 @@ PLAN.md and CLAUDE.md are the authoritative docs. Karpathy guidelines apply.
      adds `make`.
 7. Test fixtures: `tests/fixtures/{hello.txt, numbers.txt, random.bin, empty.bin}`.
    Deterministic content; no random bytes.
-8. Placeholder stub blob: `stubs/blobs/stored_8086.bin` is 256 zero
-   bytes so the host crate compiles. Replace with the Docker-built blob.
+8. Placeholder stub blob: `stubs/blobs/stored_8086.bin` is a minimal
+   MZ header (matches the magic check in `pack`) plus zero padding to
+   256 bytes. Not a runnable .EXE; the host roundtrip tests don't
+   execute it. Replace with the Docker-built blob to get a real SFX.
 
 ## What's left to make Phase 1's verify pass
 

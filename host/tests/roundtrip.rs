@@ -80,6 +80,30 @@ fn pack_is_deterministic_in_reproducible_mode() {
 }
 
 #[test]
+fn pack_output_independent_of_argv_order() {
+    let fixtures = fixtures_dir();
+    let forward: Vec<PathBuf> = ["empty.bin", "hello.txt", "numbers.txt", "random.bin"]
+        .iter()
+        .map(|n| fixtures.join(n))
+        .collect();
+    let reversed: Vec<PathBuf> = forward.iter().rev().cloned().collect();
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("forward.exe");
+    let b = tmp.path().join("reversed.exe");
+    for (out, ins) in [(&a, &forward), (&b, &reversed)] {
+        let mut cmd = doskrunch();
+        cmd.arg("pack")
+            .arg(out)
+            .args(ins)
+            .args(["--algo", "stored", "--target", "8086"]);
+        assert!(cmd.status().unwrap().success());
+    }
+    let ba = std::fs::read(&a).unwrap();
+    let bb = std::fs::read(&b).unwrap();
+    assert_eq!(ba, bb, "argv order should not affect reproducible-mode output");
+}
+
+#[test]
 fn inspect_runs() {
     let fixtures = fixtures_dir();
     let tmp = tempfile::tempdir().unwrap();
