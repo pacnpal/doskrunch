@@ -49,7 +49,9 @@ fn safe_basename(name: &str) -> Result<&str> {
     for b in name.bytes() {
         match b {
             0 => bail!("archive entry name '{}' contains NUL", name),
-            b if b < 0x20 => bail!("archive entry name '{}' contains control character", name),
+            b if b < 0x20 || b == 0x7f => {
+                bail!("archive entry name '{}' contains control character", name)
+            }
             // `.` and `:` show up in legitimate basenames (extension /
             // ... well, `:` doesn't, but it's listed below). Treat the
             // dot as legal here; the mangler's full illegal set covers

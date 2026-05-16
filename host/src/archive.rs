@@ -176,12 +176,29 @@ impl Archive {
         }
     }
 
+    /// Sum of every file's uncompressed and compressed sizes. The
+    /// public `pack` path validates the cumulative total fits in u32
+    /// *before* calling here, so overflow is a programmer error;
+    /// debug builds assert, release builds saturate to keep encoding
+    /// total-failure-safe.
     pub fn totals(&self) -> (u32, u32) {
         let mut u: u32 = 0;
         let mut c: u32 = 0;
         for f in &self.files {
-            u = u.saturating_add(f.uncompressed_size());
-            c = c.saturating_add(f.compressed_size());
+            match u.checked_add(f.uncompressed_size()) {
+                Some(v) => u = v,
+                None => {
+                    debug_assert!(false, "totals: uncompressed overflow u32");
+                    u = u32::MAX;
+                }
+            }
+            match c.checked_add(f.compressed_size()) {
+                Some(v) => c = v,
+                None => {
+                    debug_assert!(false, "totals: compressed overflow u32");
+                    c = u32::MAX;
+                }
+            }
         }
         (u, c)
     }
@@ -429,7 +446,7 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
                     "non-ASCII byte",
                 ));
             }
-            b if b < 0x20 => {
+            b if b < 0x20 || b == 0x7f => {
                 return Err(ArchiveError::InvalidName(
                     String::from_utf8_lossy(body).into_owned(),
                     "control character",
@@ -795,6 +812,24 @@ mod tests {
                 "expected InvalidName for {bad:?}, got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_del_byte_in_name() {
+        // 0x7F (DEL) shouldn't be treated as printable ASCII.
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.files = vec![FileEntry {
+            name: vec![b'A', 0x7f, b'.', b'T', b'X', b'T', 0],
+            attrs: 0x20,
+            timestamp: 0,
+            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            crc32: crc32fast::hash(&[]),
+        }];
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidName(_, _)), "got {err:?}");
     }
 
     #[test]

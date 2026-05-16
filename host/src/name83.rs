@@ -22,7 +22,8 @@ fn sanitize_part(s: &str, max: usize) -> String {
         }
         let c = ch.to_ascii_uppercase();
         let b = c as u32;
-        if b > 0x7f || (b as u8) < 0x20 {
+        if b > 0x7e || (b as u8) < 0x20 {
+            // Reject non-ASCII, control bytes < 0x20, and DEL (0x7F).
             out.push('_');
             continue;
         }

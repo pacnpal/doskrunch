@@ -122,7 +122,8 @@ static int validate_name(const char *s, unsigned slen)
     if (s[slen - 1] == '.' || s[slen - 1] == ' ') return 1;
     for (i = 0; i < slen; i++) {
         unsigned char c = (unsigned char)s[i];
-        if (c < 0x20 || c >= 0x80) return 1;
+        /* Reject control bytes (< 0x20), DEL (0x7F), and non-ASCII. */
+        if (c < 0x20 || c == 0x7f || c >= 0x80) return 1;
         /* FAT 8.3 illegal byte set — mirrors host/src/name83.rs ILLEGAL
          * so an archive that slipped past the host validator can't
          * land an unexpected/ambiguous name on DOS. */
