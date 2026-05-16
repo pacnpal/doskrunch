@@ -33,6 +33,16 @@ pub fn pack(opts: PackOptions) -> Result<()> {
 
     let stub = stub_for(opts.algorithm, opts.target)
         .map_err(|e| anyhow::anyhow!(e))?;
+    if stub.len() < 2 || &stub[..2] != b"MZ" {
+        bail!(
+            "embedded stub blob for ({}, {}) is not a DOS .EXE (missing MZ magic) — \
+             this build was made before the Watcom stub was produced; \
+             build it via `docker run --rm -v \"$PWD/stubs:/work\" -w /work doskrunch-watcom make all` \
+             and commit the result to `stubs/blobs/`.",
+            opts.algorithm.name(),
+            opts.target.name()
+        );
+    }
 
     let mut archive = Archive::new(opts.algorithm, opts.target);
     if !opts.preserve_timestamps {
@@ -95,7 +105,8 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         if data.len() > u32::MAX as usize {
             bail!("{}: file exceeds 4 GiB", src.display());
         }
-        let entry = build_stored_entry(&stored_name, 0x20, timestamp, &data);
+        let entry = build_stored_entry(&stored_name, 0x20, timestamp, &data)
+            .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
         archive.files.push(entry);
     }
 

@@ -250,13 +250,17 @@ impl Archive {
         let file_count = u16::from_le_bytes([hdr_rest[5], hdr_rest[6]]);
         let _total_u =
             u32::from_le_bytes([hdr_rest[7], hdr_rest[8], hdr_rest[9], hdr_rest[10]]);
-        let _total_c =
+        let total_c =
             u32::from_le_bytes([hdr_rest[11], hdr_rest[12], hdr_rest[13], hdr_rest[14]]);
         let run_after_offset = u16::from_le_bytes([hdr_rest[15], hdr_rest[16]]);
 
+        // Bound parse-time allocations to the archive's own declared
+        // total. A hostile producer can still lie about the total, but
+        // it can't make us pre-allocate more than the total it claims.
+        let mut budget = total_c as u64;
         let mut files = Vec::with_capacity(file_count as usize);
         for _ in 0..file_count {
-            files.push(read_file(r)?);
+            files.push(read_file(r, &mut budget)?);
         }
         Ok(Self {
             version,
@@ -300,7 +304,7 @@ fn write_file<W: Write>(w: &mut W, f: &FileEntry) -> io::Result<()> {
     Ok(())
 }
 
-fn read_file<R: Read>(r: &mut R) -> Result<FileEntry, ArchiveError> {
+fn read_file<R: Read>(r: &mut R, budget: &mut u64) -> Result<FileEntry, ArchiveError> {
     let mut b1 = [0u8; 1];
     r.read_exact(&mut b1)?;
     let name_len = b1[0] as usize;
@@ -333,6 +337,17 @@ fn read_file<R: Read>(r: &mut R) -> Result<FileEntry, ArchiveError> {
         let mut us = [0u8; 2];
         r.read_exact(&mut us)?;
         let usize_u = u16::from_le_bytes(us);
+        // Bound the per-chunk allocation by the archive-wide budget the
+        // header itself declared. Without this a hostile archive could
+        // claim chunk_count = 65535 chunks of csize 65535 and we'd try
+        // to allocate ~4 GiB before the read failed.
+        if (csize as u64) > *budget {
+            return Err(ArchiveError::ArchiveTooLarge {
+                declared: *budget,
+                kind: "remaining-compressed",
+            });
+        }
+        *budget -= csize as u64;
         let mut data = vec![0u8; csize];
         r.read_exact(&mut data)?;
         sum_u = sum_u.saturating_add(usize_u as u32);
@@ -418,21 +433,25 @@ pub fn read_trailer(tail: &[u8]) -> Result<u32, ArchiveError> {
     Ok(u32::from_le_bytes([t[4], t[5], t[6], t[7]]))
 }
 
-/// Build a stored-algorithm file entry from raw bytes. Chunk size cap is u16.
-pub fn build_stored_entry(name_8_3: &str, attrs: u8, timestamp: u32, data: &[u8]) -> FileEntry {
+/// Build a stored-algorithm file entry from raw bytes. Each chunk's size
+/// is capped at u16; the per-file chunk count is also u16, so files
+/// over `(u16::MAX as usize) * (u16::MAX as usize) - 1` bytes are rejected.
+pub fn build_stored_entry(
+    name_8_3: &str,
+    attrs: u8,
+    timestamp: u32,
+    data: &[u8],
+) -> Result<FileEntry, ArchiveError> {
+    const MAX: usize = u16::MAX as usize;
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
-    // Phase 1: single chunk per file. PLAN.md §8 chunk size cap = u16, so a
-    // single chunk holds up to 65535 bytes. Larger payloads are a Phase 4
-    // concern and will split here.
-    let chunks = if data.is_empty() {
+    let chunks: Vec<Chunk> = if data.is_empty() {
         vec![Chunk {
             uncompressed_size: 0,
             data: Vec::new(),
         }]
     } else {
-        const MAX: usize = u16::MAX as usize;
         data.chunks(MAX)
             .map(|c| Chunk {
                 uncompressed_size: c.len() as u16,
@@ -440,13 +459,16 @@ pub fn build_stored_entry(name_8_3: &str, attrs: u8, timestamp: u32, data: &[u8]
             })
             .collect()
     };
-    FileEntry {
+    if chunks.len() > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(chunks.len()));
+    }
+    Ok(FileEntry {
         name,
         attrs,
         timestamp,
         chunks,
         crc32: crc,
-    }
+    })
 }
 
 #[derive(Debug)]
@@ -461,6 +483,8 @@ pub enum ArchiveError {
     HeaderCrcMismatch { expected: u32, actual: u32 },
     EmptyFileName,
     InvalidName(String, &'static str),
+    TooManyChunks(usize),
+    ArchiveTooLarge { declared: u64, kind: &'static str },
     SizeMismatch {
         file: String,
         declared: u32,
@@ -484,6 +508,10 @@ impl std::fmt::Display for ArchiveError {
             ),
             Self::EmptyFileName => write!(f, "file entry has zero-length name"),
             Self::InvalidName(name, why) => write!(f, "invalid file name {name:?}: {why}"),
+            Self::TooManyChunks(n) => write!(f, "file would need {n} chunks; on-disk chunk_count is u16"),
+            Self::ArchiveTooLarge { declared, kind } => {
+                write!(f, "archive declares {declared} {kind} bytes, refusing to allocate")
+            }
             Self::SizeMismatch {
                 file,
                 declared,
@@ -526,20 +554,20 @@ mod tests {
     #[test]
     fn single_file_roundtrips() {
         let data = b"hello dos world";
-        let entry = build_stored_entry("HELLO.TXT", 0x20, 0, data);
+        let entry = build_stored_entry("HELLO.TXT", 0x20, 0, data).unwrap();
         roundtrip(vec![entry]);
     }
 
     #[test]
     fn zero_byte_file_roundtrips() {
-        let entry = build_stored_entry("EMPTY.BIN", 0x20, 0, b"");
+        let entry = build_stored_entry("EMPTY.BIN", 0x20, 0, b"").unwrap();
         roundtrip(vec![entry]);
     }
 
     #[test]
     fn multi_chunk_file_roundtrips() {
         let data: Vec<u8> = (0..200_000u32).map(|i| (i & 0xff) as u8).collect();
-        let entry = build_stored_entry("BIG.BIN", 0x20, 0, &data);
+        let entry = build_stored_entry("BIG.BIN", 0x20, 0, &data).unwrap();
         assert!(entry.chunks.len() >= 4, "should split into multiple chunks");
         let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
         assert_eq!(total as usize, data.len());
@@ -552,7 +580,7 @@ mod tests {
             .map(|i| {
                 let name = format!("F{i:04}.TXT");
                 let data = format!("contents number {i}\n").into_bytes();
-                build_stored_entry(&name, 0x20, 0, &data)
+                build_stored_entry(&name, 0x20, 0, &data).unwrap()
             })
             .collect();
         roundtrip(files);
@@ -570,7 +598,7 @@ mod tests {
     #[test]
     fn header_crc_detects_flip() {
         let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
-        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"a")];
+        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"a").unwrap()];
         let mut buf = Vec::new();
         a.write(&mut buf).unwrap();
         // Flip a bit inside the header (algorithm byte at offset 5).
@@ -621,6 +649,39 @@ mod tests {
         let mut r = std::io::Cursor::new(&buf);
         let err = Archive::read(&mut r).unwrap_err();
         assert!(matches!(err, ArchiveError::InvalidName(_, _)));
+    }
+
+    #[test]
+    fn parser_refuses_oversized_csize_vs_declared_total() {
+        // Hand-craft an archive whose header declares total_compressed=10
+        // but whose single file entry claims a 65535-byte chunk. The
+        // parser should refuse to allocate instead of trusting the chunk.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"DKCH");
+        buf.push(1); // version
+        buf.push(0); // algorithm
+        buf.push(0); // target
+        buf.extend_from_slice(&0u16.to_le_bytes()); // flags
+        buf.extend_from_slice(&1u16.to_le_bytes()); // file_count
+        buf.extend_from_slice(&10u32.to_le_bytes()); // total_u
+        buf.extend_from_slice(&10u32.to_le_bytes()); // total_c (10 bytes budget)
+        buf.extend_from_slice(&0u16.to_le_bytes()); // run_after
+        let crc = crc32fast::hash(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        // file entry: name "A\0" (len 2), attrs, ts, usize, chunk_count=1
+        buf.push(2);
+        buf.extend_from_slice(b"A\0");
+        buf.push(0x20);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&10u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        // chunk header: csize=65535 (well above the 10-byte budget)
+        buf.extend_from_slice(&65535u16.to_le_bytes());
+        buf.extend_from_slice(&10u16.to_le_bytes());
+        // (no data — parser should bail before reading)
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(matches!(err, ArchiveError::ArchiveTooLarge { .. }), "got {err:?}");
     }
 
     #[test]

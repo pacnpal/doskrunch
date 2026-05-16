@@ -113,6 +113,10 @@ int main(int argc, char **argv)
     if (read_exact(self, trailer, TRAILER_SIZE) != 0) die("read trailer");
     if (memcmp(trailer, DKTR, 4) != 0) die("bad trailer magic");
     archive_off = rd_u32(trailer + 4);
+    /* Validate before casting to signed long: DOS lseek is i32, and the
+     * archive must sit before the trailer we just read. */
+    if (archive_off > 0x7FFFFFFFUL) die("archive offset > 2 GiB");
+    if ((u32)archive_off + TRAILER_SIZE > (u32)self_size) die("archive offset past EOF");
 
     if (lseek(self, (long)archive_off, SEEK_SET) == -1L) die("seek archive");
     if (read_exact(self, hdr, 21) != 0) die("read header");

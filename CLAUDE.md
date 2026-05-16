@@ -65,7 +65,7 @@ Build fails if a blob exceeds the hard ceiling.
 3. **LZMA** optional, best ratio, **386+ only**. Host rejects `--algo lzma --target 8086|286`.
 4. **stored** always available, no compression. Phase 1 baseline.
 
-Default invocation: `doskrunch pack out.exe files/` → `--algo aplib --target 8086`.
+Default invocation today (Phase 1): `doskrunch pack out.exe files...` → `--algo stored --target 8086`. The default `--algo` flips to `aplib` once Phase 2 lands.
 
 ## Reproducible builds
 

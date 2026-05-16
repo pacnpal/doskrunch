@@ -26,8 +26,9 @@ pub fn unpack(opts: UnpackOptions) -> Result<()> {
 }
 
 /// Reject stored names containing path separators, `..`, NULs, leading
-/// dots, or empty strings. The host always writes 8.3 ASCII names, but
-/// `unpack` may be fed a hostile archive — keep it strictly basename-only.
+/// dots, empty strings, or Windows reserved device names. The host
+/// always writes 8.3 ASCII names, but `unpack` may be fed a hostile
+/// archive — keep it strictly basename-only and cross-platform safe.
 fn safe_basename(name: &str) -> Result<&str> {
     if name.is_empty() {
         bail!("archive entry has empty name");
@@ -45,7 +46,46 @@ fn safe_basename(name: &str) -> Result<&str> {
     if name.starts_with('.') {
         bail!("archive entry name '{}' has a leading dot", name);
     }
+    // Windows reserved device names — opening these can hang or write
+    // to a device instead of a file. Compare on the stem before the
+    // first dot, case-insensitively.
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stem = name.split('.').next().unwrap_or(name);
+    for r in RESERVED {
+        if stem.eq_ignore_ascii_case(r) {
+            bail!("archive entry name '{}' is a reserved device name", name);
+        }
+    }
     Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_basename;
+
+    #[test]
+    fn rejects_path_traversal() {
+        assert!(safe_basename("../etc/passwd").is_err());
+        assert!(safe_basename("a/b").is_err());
+        assert!(safe_basename("a\\b").is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_device_names() {
+        for bad in &["CON", "con", "Nul", "COM1.TXT", "lpt9.dat", "AUX"] {
+            assert!(safe_basename(bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn accepts_plain_8_3() {
+        assert!(safe_basename("HELLO.TXT").is_ok());
+        assert!(safe_basename("README").is_ok());
+    }
 }
 
 pub fn load_archive(path: &Path) -> Result<Archive> {
