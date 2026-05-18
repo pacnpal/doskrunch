@@ -159,7 +159,99 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 
 ## Phase 4: chunked extraction, large payloads
 
-Not started.
+The chunked decoder (`stubs/src/stub.c::main` per-chunk loop) and
+chunked encoder (`build_aplib_entry` / `build_stored_entry` splitting
+input at `APLIB_CHUNK_INPUT = 16 KiB`) shipped in Phase 2/3. FAT
+timestamp restoration and 8.3 mangling-with-warning shipped in Phase
+1/2. Phase 4 fills the user-facing input surface and adds the
+verify-gate tests PLAN.md §10 specifies.
+
+- [x] Directory walking in `host/src/pack.rs` — recursive walk via
+      `expand_inputs` + `walk_dir`. Symlinks skipped (no follow). Each
+      `read_dir` result sorted per directory so the walk itself is
+      reproducible across hosts; pack's downstream "sort by mangled
+      8.3" pass is what guarantees the on-disk byte sequence is
+      identical across runs.
+- [x] `--chunk-size <bytes>` CLI flag. Default 16384 (= stub BSS
+      budget); validated at the CLI layer to `1..=16384` for aplib,
+      `1..=u16::MAX` for stored. Stub unchanged — the on-disk archive
+      records per-chunk sizes that the stub reads back as-is. The flag
+      lets users tune host RAM during pack without touching the stub.
+      32 KiB default explicitly **not** taken in Phase 4 — see the
+      "subtle issues" note in the Phase 4 brief; bumping default
+      requires either a memory-model change in the stub or DOS-side
+      heap allocation, neither of which the verify gate asks for.
+- [x] Test helpers consolidated: `WaitError`, `wait_with_timeout`,
+      `locate_case_insensitive`, `repo_root` moved to
+      `host/tests/common/mod.rs`. Each `dosbox_*.rs` keeps its own
+      `dosbox.conf` template and timeout inline (varies per test).
+      Crosses the 6+ files threshold called out in the Phase 3 PR
+      review: 6 existing dosbox_*.rs + 1 benchmark + 2 new (2 MB,
+      timestamps) = 9 callers.
+- [x] `host/tests/dosbox_2mb_memsize2.rs` — `#[ignore]`-gated PLAN.md
+      §10 Phase 4 Verify gate. 2 MiB compressible synthetic payload
+      packed at each tier; DOSBox-X run with `memsize=2`,
+      `xms=false`, `ems=false`, `umb=false`. Asserts byte-identical
+      extraction. Confirms the chunked decoder keeps the SFX working
+      set bounded by the stub's small-model BSS (~35 KiB) — payload
+      is never resident in conventional RAM, the stub streams it
+      chunk-by-chunk.
+- [x] `host/tests/dosbox_timestamps.rs` — `#[ignore]`-gated PLAN.md
+      §10 Phase 4 Verify gate. Two cases: (1) pinned source mtime
+      (2024-05-16 12:34:56 UTC, on a FAT 2s boundary) round-trips
+      through pack → DOSBox-X → host `fs::metadata`, truncated to 2s.
+      (2) Pre-1980 mtime gets clamped to the 1980-01-01 FAT epoch
+      endpoint — defends the `fat_time::unix_to_fat` clamp end-to-end
+      so a regression that removes it would fail this gate. Source
+      mtime is set via `filetime::set_file_mtime` to a fixed value
+      rather than wall-clock-now, so the test is stable across reruns
+      and across CI host clocks.
+- [x] Host-side roundtrip tests in `host/tests/roundtrip.rs` for the
+      new flag and walker:
+      `pack_walks_directory_recursively`,
+      `directory_pack_is_deterministic_across_two_invocations`,
+      `chunk_size_flag_respected_end_to_end`,
+      `chunk_size_above_stub_budget_for_aplib_is_rejected`.
+- [x] CLI help (`host/src/main.rs::Cmd::Pack`) documents directories
+      are walked recursively, files extract flat (no subdir recreation
+      on DOS), and `--chunk-size` defaults to 16 KiB. The "directories
+      not yet supported" placeholder is gone.
+
+**Phase 4 verify**
+
+- [x] `cargo test --workspace` green (50 unit + 11 integration: 8
+      roundtrip + 3 aplib_roundtrip; ignored DOSBox-X gates remain
+      gated).
+- [ ] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
+      extracts byte-identical fixtures and payloads under
+      `cputype=8086`, `cputype=386`, `cputype=pentium` across the
+      original six Phase 3 gates plus the two new Phase 4 gates
+      (2 MB memsize=2 + timestamps). Verified once CI's
+      `dosbox-x-integration` job runs the full suite.
+- [x] `cargo run -- pack out.exe some/dir/` walks the directory,
+      packs every regular file under it in deterministically-sorted
+      order, byte-identical across reruns.
+- [x] Stub blob sizes unchanged from Phase 3 (the stub is untouched in
+      Phase 4 — `--chunk-size` is a host-side knob only; the stub
+      reads per-chunk `usize`/`csize` from the archive header
+      verbatim).
+
+**Not done in Phase 4 (deferred deliberately)**
+
+- Default chunk size bump to 32 KiB. PLAN.md asks for it but the
+  small-model DS budget (BSS ~35 KB at 16 KiB; ~52 KB at 32 KiB)
+  doesn't have the headroom without either compact memory model or
+  DOS-heap allocation. Shipping `--chunk-size` lets users tune
+  upward when their stub-budget headroom allows; defaulting up is a
+  focused follow-up.
+- Subdirectory recreation in the stub. PLAN.md §8 hints at it for
+  directory mode, but Phase 4 Verify doesn't require it. Flat
+  extraction is the simpler shipping choice and is documented in
+  the CLI help. Phase 6 polish can revisit.
+- INT 1Ah cycle-counter instrumentation for the Phase 3 perf gate.
+  Not bundled into Phase 4 per the working brief; the perf-gate row
+  above stays open across phases until the user picks a direction.
+
 
 ## Phase 5: LZMA + remaining tiers
 

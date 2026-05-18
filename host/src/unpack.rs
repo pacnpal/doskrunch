@@ -152,10 +152,14 @@ mod tests {
     }
 }
 
-/// Phase 1 hard cap on input SFX size. `Archive::read` builds the
-/// whole archive in memory; the per-file cap in `write_entry` runs too
-/// late to bound the parse-time footprint. Streaming parse lands in
-/// Phase 4 alongside chunked extraction.
+/// Hard cap on input SFX size for host-side unpack. `Archive::read`
+/// builds the whole archive in memory; the per-file cap in
+/// `write_entry` runs too late to bound the parse-time footprint. 512
+/// MiB is well above any realistic DOS SFX (the stub itself caps the
+/// total `.EXE` at 2 GiB via DOS lseek limits, but unpack is a host
+/// convenience for inspecting / extracting archives and doesn't need
+/// to materialise multi-hundred-megabyte payloads at once). A
+/// streaming parse would lift this, but no current workflow needs it.
 const MAX_INPUT_SFX_BYTES: u64 = 512 * 1024 * 1024;
 
 pub fn load_archive(path: &Path) -> Result<Archive> {
@@ -166,7 +170,7 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
     }
     if total > MAX_INPUT_SFX_BYTES {
         bail!(
-            "{}: input SFX is {} bytes; phase-1 unpack caps at {} (streaming parse lands in phase 4)",
+            "{}: input SFX is {} bytes; host-side unpack caps at {} bytes (Archive::read is non-streaming)",
             path.display(),
             total,
             MAX_INPUT_SFX_BYTES
@@ -201,17 +205,18 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
         Algorithm::Lzsa2 => bail!("lzsa2 host-decode lands in phase 6"),
         Algorithm::Lzma => bail!("lzma host-decode lands in phase 5"),
     }
-    // Phase 1 hard cap on per-file uncompressed size. The current unpack
-    // path builds the whole file in memory; streaming lands in Phase 4
-    // along with chunked extraction (PLAN.md §10). Until then, refuse
-    // to materialise more than 256 MiB per entry — well above any
-    // realistic Phase 1 fixture, far below OOM territory.
+    // Host-side cap on per-file uncompressed size. The unpack path
+    // builds the whole file in memory before writing it out (the
+    // chunked decoder is on the DOS stub side; the host's `unpack`
+    // command is a convenience for inspecting and extracting archives
+    // without a DOS box, not a long-tail tool). 256 MiB is the cap to
+    // refuse hostile or buggy archives that declare improbably large
+    // entries; streaming the per-file write would lift this.
     const MAX_UNCOMPRESSED: u32 = 256 * 1024 * 1024;
     let total = entry.uncompressed_size();
     if total > MAX_UNCOMPRESSED {
         bail!(
-            "{}: declared uncompressed size {} exceeds the phase-1 unpack cap ({} bytes); \
-             this lands in phase 4 with streaming extraction.",
+            "{}: declared uncompressed size {} exceeds the host-side unpack cap ({} bytes)",
             entry.display_name(),
             total,
             MAX_UNCOMPRESSED

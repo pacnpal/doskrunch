@@ -65,7 +65,7 @@ Build fails if a blob exceeds the hard ceiling.
 3. **LZMA** optional, best ratio, **386+ only**. Host rejects `--algo lzma --target 8086|286`.
 4. **stored** always available, no compression. Phase 1 baseline.
 
-Default invocation today (Phase 3): `doskrunch pack out.exe files...` → `--algo aplib --target 8086`. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob. Phase 3 also ships `--target 386` (wcc -3 + 32-bit-register aPLib depacker from `aplib_depack_32.asm`) and `--target pentium` (wcc -5 + speed-optimized fast-variant depacker from `aplib_depack_p5.asm`); both blobs dispatch on the archive's algorithm byte the same way the 8086 blob does.
+Default invocation today (Phase 4): `doskrunch pack out.exe files-or-dirs...` → `--algo aplib --target 8086`. Directory inputs are walked recursively (symlinks skipped); files extract flat at runtime regardless of the source tree's shape. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob. Phase 3 also ships `--target 386` (wcc -3 + 32-bit-register aPLib depacker from `aplib_depack_32.asm`) and `--target pentium` (wcc -5 + speed-optimized fast-variant depacker from `aplib_depack_p5.asm`); both blobs dispatch on the archive's algorithm byte the same way the 8086 blob does. `--chunk-size <bytes>` (Phase 4) overrides the default 16 KiB chunk; the ceiling is 16 KiB for aplib (stub BSS budget) and `u16::MAX` for stored.
 
 ## Reproducible builds
 
@@ -79,12 +79,16 @@ Headless DOSBox-X gates live in `host/tests/dosbox_*.rs`, each `#[ignore]`-gated
 SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored
 ```
 
-Phase 3 ships six DOSBox-X correctness gates:
+Eight DOSBox-X correctness gates ship (six from Phase 3, two added in Phase 4):
 
 - `dosbox_8086` — Phase 1 default-algo smoke test. Packs the small fixture set with no `--algo` flag, so it exercises whichever algorithm the host currently defaults to (Phase 2+ → `aplib`). Runs under `cputype=8086`.
 - `dosbox_aplib_8086`, `dosbox_aplib_386`, `dosbox_aplib_pentium` — explicit `--algo aplib` packs of the small fixture set at the matching `--target`, run under the matching `cputype=`. Each fixture fits in a single 16 KiB aPLib chunk.
 - `dosbox_aplib_large` — packs a 500 KiB synthetic mixed-content payload with `--algo aplib` at each of the three tiers and runs the SFX under the matching `cputype=`. At 500 KiB the payload spans ~32 chunks per file, so this gate exercises the stub's per-chunk decode loop end-to-end on a real-mode CPU emulation.
 - `dosbox_stored_all_tiers` — explicit `--algo stored` packs at each of the three tiers under the matching `cputype=`. The stub's stored branch (`algo == 0`, streaming `copy_bytes` through `g_buf`) is a different runtime path from the aplib branch; this gate verifies it works under Watcom's `-3` / `-5` C codegen for the new tiers.
+- `dosbox_2mb_memsize2` (Phase 4) — 2 MiB compressible synthetic payload packed at each of the three tiers and run under DOSBox-X with `memsize=2`, `xms=false`, `ems=false`, `umb=false`. The 2 MB payload is never resident in conventional RAM — the chunked decoder streams it 16 KiB at a time — so byte-identical extraction at memsize=2 is the gate that proves the stub's BSS budget actually bounds working memory.
+- `dosbox_timestamps` (Phase 4) — two cases. (1) A pinned source mtime (deliberately not "now", set via `filetime::set_file_mtime`) round-trips through pack → DOSBox-X → host `fs::metadata`; the archive's timestamp field is checked exactly, the extracted file's mtime is checked with ±24 h slack to absorb the host's local-time offset (DOS interprets FAT dates as local time). (2) Pre-1980 source mtime is clamped to the FAT epoch endpoint by `fat_time::unix_to_fat`; the extracted file's mtime should land near 1980-01-01.
+
+Shared test plumbing (`WaitError`, `wait_with_timeout`, `locate_case_insensitive`, `repo_root`) lives in `host/tests/common/mod.rs`; each `dosbox_*.rs` file still writes its own `dosbox.conf` inline because the per-test config knobs differ (memsize, xms/ems flags, cputype, autoexec).
 
 Each gate asserts byte-identical extraction. The 500 KiB tier benchmark (`benchmark_tiers`) is also `#[ignore]`-gated but additionally requires the `DOSKRUNCH_RUN_BENCHMARK=1` env var (so the CI `--ignored` run doesn't silently rewrite the committed `tests/benchmarks/results.md`); run it locally with:
 

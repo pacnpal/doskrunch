@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::archive::{build_aplib_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier};
+use crate::archive::{
+    build_aplib_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier, APLIB_CHUNK_INPUT,
+};
 use crate::fat_time::unix_to_fat;
 use crate::name83::{dedupe, mangle};
 use crate::stubs::stub_for;
@@ -16,6 +18,12 @@ pub struct PackOptions {
     pub algorithm: Algorithm,
     pub target: TargetTier,
     pub preserve_timestamps: bool,
+    /// Max bytes per uncompressed chunk. Default `APLIB_CHUNK_INPUT`
+    /// (16 KiB) — same value the stub's BSS scratch is sized for. Smaller
+    /// values trade a sliver of compression ratio for proportionally less
+    /// per-chunk host memory during pack; larger values are rejected at
+    /// the CLI layer because the stub's small-model DS can't hold them.
+    pub chunk_size: usize,
 }
 
 pub fn pack(opts: PackOptions) -> Result<()> {
@@ -25,6 +33,24 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         Algorithm::Lzma => bail!(
             "algorithm 'lzma' lands in phase 5 (and will require --target 386+ when enabled)"
         ),
+    }
+
+    // The CLI layer enforces the same ceiling; assert here so library
+    // callers (and any future test that calls pack() directly) catch
+    // bad values before they reach the chunk encoder.
+    let chunk_max = match opts.algorithm {
+        Algorithm::Aplib => APLIB_CHUNK_INPUT,
+        // Stored chunks are bounded by the per-chunk u16 size field.
+        Algorithm::Stored => u16::MAX as usize,
+        _ => unreachable!(),
+    };
+    if !(1..=chunk_max).contains(&opts.chunk_size) {
+        bail!(
+            "chunk_size {} is outside the valid range 1..={} for algorithm '{}'",
+            opts.chunk_size,
+            chunk_max,
+            opts.algorithm.name()
+        );
     }
 
     let stub = stub_for(opts.algorithm, opts.target)
@@ -64,24 +90,30 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         archive.flags |= flags::REPRODUCIBLE;
     }
 
-    if opts.inputs.len() > u16::MAX as usize {
+    // Expand any directory inputs into the regular files they contain.
+    // Symlinks are not followed (avoids cycles and surprise inclusion of
+    // files outside the named tree). Hidden / dotfile names are kept —
+    // DOS has no leading-dot convention, so a `.gitignore` named on
+    // purpose is intended.
+    let expanded = expand_inputs(&opts.inputs)?;
+    if expanded.len() > u16::MAX as usize {
         bail!(
             "too many input files ({}); archive header file_count is u16",
-            opts.inputs.len()
+            expanded.len()
         );
     }
 
     // Pass 1: stat + mangle. Collect (mangled, source path, metadata) before
     // any dedupe so we can reorder deterministically.
-    let mut prelim: Vec<(String, PathBuf, fs::Metadata)> = Vec::with_capacity(opts.inputs.len());
-    for src in &opts.inputs {
+    let mut prelim: Vec<(String, PathBuf, fs::Metadata)> = Vec::with_capacity(expanded.len());
+    for src in &expanded {
         let meta = fs::metadata(src)
             .with_context(|| format!("stat {}", src.display()))?;
         if !meta.is_file() {
-            bail!(
-                "{}: not a regular file (directory walking lands in phase 4)",
-                src.display()
-            );
+            // `expand_inputs` already filtered to regular files; this is
+            // defense against a TOCTOU race where something replaced the
+            // path with a directory between the walk and the stat.
+            bail!("{}: no longer a regular file", src.display());
         }
         let src_name = src
             .file_name()
@@ -148,8 +180,12 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             bail!("{}: file exceeds 4 GiB", src.display());
         }
         let entry = match opts.algorithm {
-            Algorithm::Stored => build_stored_entry(&stored_name, 0x20, timestamp, &data),
-            Algorithm::Aplib => build_aplib_entry(&stored_name, 0x20, timestamp, &data),
+            Algorithm::Stored => {
+                build_stored_entry(&stored_name, 0x20, timestamp, &data, opts.chunk_size)
+            }
+            Algorithm::Aplib => {
+                build_aplib_entry(&stored_name, 0x20, timestamp, &data, opts.chunk_size)
+            }
             // Lzsa2/Lzma rejected earlier; unreachable here.
             other => bail!("internal: unexpected algorithm {}", other.name()),
         }
@@ -175,6 +211,70 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // i32::MAX accounts for the stub + archive + trailer; checked again
     // in write_sfx once we know the exact archive byte size.
     write_sfx(&opts.output, stub, &archive)?;
+    Ok(())
+}
+
+/// Expand `inputs` into a flat list of regular files. Directory inputs
+/// are walked recursively; symlinks (file or dir) are skipped to avoid
+/// cycles and to keep the included set within the named tree.
+///
+/// Walk order: each `read_dir` result is sorted by path before recursion
+/// so the final list is identical across hosts (HFS+/ext4/NTFS all
+/// return directory entries in arbitrary order). The pack pipeline then
+/// re-sorts by mangled 8.3 name before dedupe, which is what guarantees
+/// reproducible output bytes — but pre-sorting here keeps the walk
+/// itself deterministic, which matters for any caller that wants to
+/// reason about pack ordering without relying on that downstream sort.
+fn expand_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::with_capacity(inputs.len());
+    for top in inputs {
+        // `symlink_metadata` so a symlinked top-level input is skipped
+        // rather than silently dereferenced.
+        let meta = fs::symlink_metadata(top)
+            .with_context(|| format!("stat {}", top.display()))?;
+        if meta.file_type().is_symlink() {
+            bail!(
+                "{}: input is a symlink; symlinks aren't followed",
+                top.display()
+            );
+        }
+        if meta.is_file() {
+            out.push(top.clone());
+        } else if meta.is_dir() {
+            walk_dir(top, &mut out)?;
+        } else {
+            bail!(
+                "{}: not a regular file or directory (block dev / fifo / socket?)",
+                top.display()
+            );
+        }
+    }
+    Ok(out)
+}
+
+fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .with_context(|| format!("read_dir {}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    entries.sort();
+    for path in entries {
+        let meta = fs::symlink_metadata(&path)
+            .with_context(|| format!("stat {}", path.display()))?;
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            // Skip silently — most workflows have stray symlinks and
+            // failing the whole pack on them is noisier than dropping.
+            continue;
+        }
+        if ft.is_file() {
+            out.push(path);
+        } else if ft.is_dir() {
+            walk_dir(&path, out)?;
+        }
+        // Other file types (block dev, char dev, FIFO, socket) are
+        // silently skipped; they don't belong in a DOS SFX.
+    }
     Ok(())
 }
 
@@ -222,53 +322,93 @@ mod tests {
         p
     }
 
+    fn default_opts(td: &Path, inputs: Vec<PathBuf>, algorithm: Algorithm) -> PackOptions {
+        PackOptions {
+            output: td.join("o.exe"),
+            inputs,
+            algorithm,
+            target: TargetTier::I8086,
+            preserve_timestamps: false,
+            chunk_size: APLIB_CHUNK_INPUT,
+        }
+    }
+
     #[test]
     fn rejects_lzma_on_8086() {
         let td = tempfile::tempdir().unwrap();
         let input = make_input(td.path(), "a.txt", b"x");
-        let opts = PackOptions {
-            output: td.path().join("o.exe"),
-            inputs: vec![input],
-            algorithm: Algorithm::Lzma,
-            target: TargetTier::I8086,
-            preserve_timestamps: false,
-        };
+        let opts = default_opts(td.path(), vec![input], Algorithm::Lzma);
         let err = pack(opts).unwrap_err();
         assert!(err.to_string().contains("lzma"));
         assert!(err.to_string().contains("phase 5"));
     }
 
     #[test]
-    fn rejects_directory_input() {
-        let td = tempfile::tempdir().unwrap();
-        let subdir = td.path().join("d");
-        fs::create_dir(&subdir).unwrap();
-        let opts = PackOptions {
-            output: td.path().join("o.exe"),
-            inputs: vec![subdir],
-            algorithm: Algorithm::Stored,
-            target: TargetTier::I8086,
-            preserve_timestamps: false,
-        };
-        let err = pack(opts).unwrap_err();
-        assert!(err.to_string().contains("not a regular file"));
-    }
-
-    #[test]
     fn rejects_reserved_device_input_name() {
         let td = tempfile::tempdir().unwrap();
         let input = make_input(td.path(), "con.txt", b"x");
-        let opts = PackOptions {
-            output: td.path().join("o.exe"),
-            inputs: vec![input],
-            algorithm: Algorithm::Stored,
-            target: TargetTier::I8086,
-            preserve_timestamps: false,
-        };
+        let opts = default_opts(td.path(), vec![input], Algorithm::Stored);
         let err = pack(opts).unwrap_err();
         assert!(
             err.to_string().contains("reserved DOS device name"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_zero_chunk_size() {
+        let td = tempfile::tempdir().unwrap();
+        let input = make_input(td.path(), "a.txt", b"x");
+        let mut opts = default_opts(td.path(), vec![input], Algorithm::Aplib);
+        opts.chunk_size = 0;
+        let err = pack(opts).unwrap_err();
+        assert!(err.to_string().contains("chunk_size"));
+    }
+
+    #[test]
+    fn rejects_chunk_size_above_stub_budget_for_aplib() {
+        let td = tempfile::tempdir().unwrap();
+        let input = make_input(td.path(), "a.txt", b"x");
+        let mut opts = default_opts(td.path(), vec![input], Algorithm::Aplib);
+        opts.chunk_size = APLIB_CHUNK_INPUT + 1;
+        let err = pack(opts).unwrap_err();
+        assert!(err.to_string().contains("chunk_size"));
+    }
+
+    #[test]
+    fn directory_input_is_walked_recursively() {
+        let td = tempfile::tempdir().unwrap();
+        // Build:
+        //   src/a.txt
+        //   src/sub/b.txt
+        //   src/sub/c.txt
+        let src = td.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        let a = make_input(&src, "a.txt", b"alpha");
+        let b = make_input(&src.join("sub"), "b.txt", b"bravo");
+        let c = make_input(&src.join("sub"), "c.txt", b"charlie");
+
+        let expanded = expand_inputs(&[src.clone()]).unwrap();
+        // expand_inputs preserves walk order (sorted per directory).
+        assert_eq!(expanded.len(), 3);
+        assert!(expanded.contains(&a));
+        assert!(expanded.contains(&b));
+        assert!(expanded.contains(&c));
+    }
+
+    #[test]
+    fn walk_skips_symlinks() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let _real = make_input(&src, "real.txt", b"keep");
+        // Best-effort symlink: skip the assertion on platforms that
+        // don't support it (e.g., Windows without dev-mode).
+        let target = src.join("real.txt");
+        let link = src.join("link.txt");
+        if std::os::unix::fs::symlink(&target, &link).is_ok() {
+            let expanded = expand_inputs(&[src.clone()]).unwrap();
+            assert_eq!(expanded.len(), 1, "symlink should be skipped");
+        }
     }
 }

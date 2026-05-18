@@ -11,17 +11,14 @@
 //! CI's `dosbox-x-integration` job runs it via `cargo test -- --ignored`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
+
+mod common;
+use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(120);
-
-fn repo_root() -> PathBuf {
-    let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    host.parent().expect("host has a parent").to_path_buf()
-}
 
 fn fixtures() -> &'static [&'static str] {
     &["hello.txt", "numbers.txt", "random.bin", "empty.bin"]
@@ -109,42 +106,3 @@ fn extracts_aplib_fixtures_under_pentium_cputype() {
     }
 }
 
-enum WaitError {
-    Timeout,
-    Wait(std::io::Error),
-}
-
-fn wait_with_timeout(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> Result<ExitStatus, WaitError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(WaitError::Timeout);
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(WaitError::Wait(e));
-            }
-        }
-    }
-}
-
-fn locate_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).ok()? {
-        let entry = entry.ok()?;
-        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
-            return Some(entry.path());
-        }
-    }
-    None
-}

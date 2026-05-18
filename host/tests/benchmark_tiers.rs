@@ -37,10 +37,12 @@
 //!     time is DOS file I/O through INT 21h.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
-use std::thread;
+use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
+
+mod common;
+use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 
 /// Per-tier wall-clock cap. Even 4.77 MHz IBM-PC-class emulation should
 /// chew through 500 KiB of aPLib in well under five minutes on any
@@ -54,11 +56,6 @@ const RUNS_PER_TIER: usize = 3;
 
 /// Payload size — matches PLAN.md §10 Phase 3.
 const PAYLOAD_SIZE: usize = 500 * 1024;
-
-fn repo_root() -> PathBuf {
-    let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    host.parent().expect("host has a parent").to_path_buf()
-}
 
 /// Synthesize a deterministic mixed-content payload. The byte
 /// distribution is intentionally non-random so that aPLib actually
@@ -353,42 +350,3 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     eprintln!("wrote {}", dest.display());
 }
 
-enum WaitError {
-    Timeout,
-    Wait(std::io::Error),
-}
-
-fn wait_with_timeout(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> Result<ExitStatus, WaitError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(s)) => return Ok(s),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(WaitError::Timeout);
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(WaitError::Wait(e));
-            }
-        }
-    }
-}
-
-fn locate_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).ok()? {
-        let entry = entry.ok()?;
-        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
-            return Some(entry.path());
-        }
-    }
-    None
-}

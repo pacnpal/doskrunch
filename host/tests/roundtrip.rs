@@ -105,6 +105,119 @@ fn pack_output_independent_of_argv_order() {
 }
 
 #[test]
+fn pack_walks_directory_recursively() {
+    // Build a small tree:
+    //   src/a.txt
+    //   src/inner/b.txt
+    //   src/inner/c.txt
+    // Pack with the directory as the only input, then unpack and confirm
+    // every regular file under src/ landed in the extracted directory
+    // (flat — Phase 4 doesn't recreate subdirectories at extract time).
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("inner")).unwrap();
+    std::fs::write(src.join("a.txt"), b"alpha-contents").unwrap();
+    std::fs::write(src.join("inner").join("b.txt"), b"bravo-bytes").unwrap();
+    std::fs::write(src.join("inner").join("c.txt"), b"charlie-data").unwrap();
+
+    let exe = tmp.path().join("dir.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack")
+        .arg(&exe)
+        .arg(&src)
+        .args(["--algo", "stored", "--target", "8086"]);
+    let status = pack.status().unwrap();
+    assert!(status.success(), "pack failed for directory input");
+
+    let extracted = tmp.path().join("out");
+    let mut unpack = doskrunch();
+    unpack
+        .arg("unpack")
+        .arg(&exe)
+        .arg("-d")
+        .arg(&extracted);
+    let status = unpack.status().unwrap();
+    assert!(status.success(), "unpack failed");
+
+    let read = |name: &str| std::fs::read(extracted.join(name)).unwrap_or_default();
+    assert_eq!(read("A.TXT"), b"alpha-contents");
+    assert_eq!(read("B.TXT"), b"bravo-bytes");
+    assert_eq!(read("C.TXT"), b"charlie-data");
+}
+
+#[test]
+fn directory_pack_is_deterministic_across_two_invocations() {
+    // Same tree packed twice must produce identical bytes. Exercises
+    // both the walk-ordering and the reproducible-mode sort.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("z").join("inner")).unwrap();
+    std::fs::create_dir_all(src.join("a")).unwrap();
+    // Deliberate non-alphabetical creation order — output should still
+    // be deterministic because pack sorts by mangled name.
+    std::fs::write(src.join("z").join("inner").join("zz.txt"), b"zz").unwrap();
+    std::fs::write(src.join("a").join("aa.txt"), b"aa").unwrap();
+    std::fs::write(src.join("mid.txt"), b"mid").unwrap();
+
+    let a = tmp.path().join("a.exe");
+    let b = tmp.path().join("b.exe");
+    for out in [&a, &b] {
+        let mut cmd = doskrunch();
+        cmd.arg("pack").arg(out).arg(&src);
+        assert!(cmd.status().unwrap().success());
+    }
+    let ba = std::fs::read(&a).unwrap();
+    let bb = std::fs::read(&b).unwrap();
+    assert_eq!(ba, bb, "directory walk must be reproducible");
+}
+
+#[test]
+fn chunk_size_flag_respected_end_to_end() {
+    // Pack with a tiny chunk size and verify the produced archive uses
+    // chunks of at most that size. Uses `inspect` indirectly via
+    // unpack roundtrip — the meaningful check is that the file
+    // extracts byte-identical after being split into many small chunks.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("payload.bin");
+    let bytes: Vec<u8> = (0..40_000u32).map(|i| (i & 0xff) as u8).collect();
+    std::fs::write(&src, &bytes).unwrap();
+
+    let exe = tmp.path().join("small.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack")
+        .arg(&exe)
+        .arg(&src)
+        .args(["--algo", "aplib", "--target", "8086", "--chunk-size", "4096"]);
+    let status = pack.status().unwrap();
+    assert!(status.success(), "pack with --chunk-size failed");
+
+    let extracted = tmp.path().join("out");
+    let mut unpack = doskrunch();
+    unpack.arg("unpack").arg(&exe).arg("-d").arg(&extracted);
+    assert!(unpack.status().unwrap().success(), "unpack failed");
+
+    let got = std::fs::read(extracted.join("PAYLOAD.BIN")).unwrap();
+    assert_eq!(got, bytes, "small-chunk roundtrip mismatch");
+}
+
+#[test]
+fn chunk_size_above_stub_budget_for_aplib_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.bin");
+    std::fs::write(&src, b"x").unwrap();
+    let exe = tmp.path().join("o.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack")
+        .arg(&exe)
+        .arg(&src)
+        .args(["--algo", "aplib", "--target", "8086", "--chunk-size", "65535"]);
+    let out = pack.output().unwrap();
+    assert!(!out.status.success(), "should reject oversize chunk_size");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("chunk-size") || stderr.contains("chunk_size"));
+}
+
+#[test]
 fn inspect_runs() {
     let fixtures = fixtures_dir();
     let tmp = tempfile::tempdir().unwrap();

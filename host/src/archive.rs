@@ -218,7 +218,7 @@ impl Archive {
             .files
             .len()
             .try_into()
-            .expect("file_count overflows u16; chunk archive in phase 4+");
+            .expect("file_count overflows u16; pack already rejects > 65535 inputs");
         let mut h = Vec::with_capacity(28);
         h.extend_from_slice(ARCHIVE_MAGIC);
         h.push(self.version);
@@ -544,11 +544,15 @@ pub fn read_trailer(tail: &[u8]) -> Result<u32, ArchiveError> {
     Ok(u32::from_le_bytes([t[4], t[5], t[6], t[7]]))
 }
 
-/// Uncompressed chunk-input cap for the aPLib path. aPLib's worst-case
+/// Maximum uncompressed bytes per aPLib chunk. aPLib's worst-case
 /// expansion is roughly `n + n/8 + 16`, so 16 KiB in → ≤18.4 KiB out, which
 /// fits comfortably in the per-chunk u16 `compressed_size` field and lets
 /// the 16-bit stub keep both src and dst scratch buffers in its small-model
 /// data segment (DS ≤ 64 KiB). Must match `BUF_SIZE` in `stubs/src/stub.c`.
+///
+/// This is the *maximum* — callers may pick smaller via `--chunk-size`
+/// to trade a tiny bit of compression ratio for smaller per-chunk RAM,
+/// but the stub's BSS budget is the hard ceiling.
 pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
 
 /// Producer-side ceiling on a single aPLib chunk's compressed size. The
@@ -562,15 +566,22 @@ pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
 pub const APLIB_MAX_COMPRESSED_CHUNK: usize = 18_464;
 
 /// Build an aPLib-compressed file entry. Each chunk's uncompressed
-/// payload is bounded by `APLIB_CHUNK_INPUT` so its compressed form
-/// fits in the per-chunk u16 size field even in the worst case. CRC32
-/// is computed over the uncompressed bytes, matching the stored path.
+/// payload is at most `chunk_size` bytes (which the caller has bounded
+/// by `APLIB_CHUNK_INPUT`), so its compressed form fits in the per-chunk
+/// u16 size field even in the worst case. CRC32 is computed over the
+/// uncompressed bytes, matching the stored path.
 pub fn build_aplib_entry(
     name_8_3: &str,
     attrs: u8,
     timestamp: u32,
     data: &[u8],
+    chunk_size: usize,
 ) -> Result<FileEntry, ArchiveError> {
+    assert!(
+        (1..=APLIB_CHUNK_INPUT).contains(&chunk_size),
+        "chunk_size {chunk_size} out of valid range 1..={APLIB_CHUNK_INPUT}; \
+         CLI layer must validate"
+    );
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
@@ -580,8 +591,8 @@ pub fn build_aplib_entry(
             data: Vec::new(),
         }]
     } else {
-        let mut out = Vec::with_capacity(data.len().div_ceil(APLIB_CHUNK_INPUT));
-        for c in data.chunks(APLIB_CHUNK_INPUT) {
+        let mut out = Vec::with_capacity(data.len().div_ceil(chunk_size));
+        for c in data.chunks(chunk_size) {
             let compressed = crate::compress::aplib::compress(c)
                 .map_err(ArchiveError::AplibCompress)?;
             // Tighter ceiling than u16::MAX: the 16-bit stub's g_src is
@@ -612,16 +623,25 @@ pub fn build_aplib_entry(
     })
 }
 
-/// Build a stored-algorithm file entry from raw bytes. Each chunk's size
-/// is capped at u16; the per-file chunk count is also u16, so files
-/// over `(u16::MAX as usize) * (u16::MAX as usize) - 1` bytes are rejected.
+/// Build a stored-algorithm file entry from raw bytes. Each chunk's
+/// size is capped at `chunk_size` (which the caller has bounded so the
+/// per-chunk u16 size field never overflows); the per-file chunk count
+/// is also u16. The stored stub path streams each chunk through the
+/// same `BUF_SIZE` scratch as `copy_bytes`, so the chunk_size value
+/// affects the on-disk archive layout but not the stub's RAM use.
 pub fn build_stored_entry(
     name_8_3: &str,
     attrs: u8,
     timestamp: u32,
     data: &[u8],
+    chunk_size: usize,
 ) -> Result<FileEntry, ArchiveError> {
-    const MAX: usize = u16::MAX as usize;
+    assert!(
+        (1..=(u16::MAX as usize)).contains(&chunk_size),
+        "chunk_size {chunk_size} out of valid range 1..={}; \
+         CLI layer must validate",
+        u16::MAX
+    );
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
@@ -631,7 +651,7 @@ pub fn build_stored_entry(
             data: Vec::new(),
         }]
     } else {
-        data.chunks(MAX)
+        data.chunks(chunk_size)
             .map(|c| Chunk {
                 uncompressed_size: c.len() as u16,
                 data: c.to_vec(),
@@ -745,26 +765,38 @@ mod tests {
         roundtrip(vec![]);
     }
 
+    const STORED_TEST_CHUNK: usize = u16::MAX as usize;
+
     #[test]
     fn single_file_roundtrips() {
         let data = b"hello dos world";
-        let entry = build_stored_entry("HELLO.TXT", 0x20, 0, data).unwrap();
+        let entry = build_stored_entry("HELLO.TXT", 0x20, 0, data, STORED_TEST_CHUNK).unwrap();
         roundtrip(vec![entry]);
     }
 
     #[test]
     fn zero_byte_file_roundtrips() {
-        let entry = build_stored_entry("EMPTY.BIN", 0x20, 0, b"").unwrap();
+        let entry = build_stored_entry("EMPTY.BIN", 0x20, 0, b"", STORED_TEST_CHUNK).unwrap();
         roundtrip(vec![entry]);
     }
 
     #[test]
     fn multi_chunk_file_roundtrips() {
         let data: Vec<u8> = (0..200_000u32).map(|i| (i & 0xff) as u8).collect();
-        let entry = build_stored_entry("BIG.BIN", 0x20, 0, &data).unwrap();
+        let entry = build_stored_entry("BIG.BIN", 0x20, 0, &data, STORED_TEST_CHUNK).unwrap();
         assert!(entry.chunks.len() >= 4, "should split into multiple chunks");
         let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
         assert_eq!(total as usize, data.len());
+        roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn stored_respects_smaller_chunk_size() {
+        let data: Vec<u8> = (0..32_000u32).map(|i| (i & 0xff) as u8).collect();
+        let entry = build_stored_entry("CHUNKED.BIN", 0x20, 0, &data, 4096).unwrap();
+        for c in &entry.chunks {
+            assert!(c.uncompressed_size as usize <= 4096);
+        }
         roundtrip(vec![entry]);
     }
 
@@ -782,7 +814,7 @@ mod tests {
     #[test]
     fn aplib_single_file_roundtrips() {
         let data = b"hello aplib world, hello aplib world, hello aplib world.".repeat(8);
-        let entry = build_aplib_entry("HELLO.TXT", 0x20, 0, &data).unwrap();
+        let entry = build_aplib_entry("HELLO.TXT", 0x20, 0, &data, APLIB_CHUNK_INPUT).unwrap();
         // Compressed should be strictly smaller than uncompressed for a repetitive input.
         let csz: usize = entry.chunks.iter().map(|c| c.data.len()).sum();
         assert!(csz < data.len(), "expected compression: csz={csz} usz={}", data.len());
@@ -792,7 +824,7 @@ mod tests {
 
     #[test]
     fn aplib_empty_file_roundtrips() {
-        let entry = build_aplib_entry("EMPTY.BIN", 0x20, 0, b"").unwrap();
+        let entry = build_aplib_entry("EMPTY.BIN", 0x20, 0, b"", APLIB_CHUNK_INPUT).unwrap();
         assert_eq!(entry.uncompressed_size(), 0);
         aplib_roundtrip(vec![entry]);
     }
@@ -803,10 +835,28 @@ mod tests {
         let data: Vec<u8> = (0..(APLIB_CHUNK_INPUT + 1024))
             .map(|i| (i & 0xff) as u8)
             .collect();
-        let entry = build_aplib_entry("BIG.BIN", 0x20, 0, &data).unwrap();
+        let entry = build_aplib_entry("BIG.BIN", 0x20, 0, &data, APLIB_CHUNK_INPUT).unwrap();
         assert!(entry.chunks.len() >= 2, "should split into multiple chunks");
         let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
         assert_eq!(total as usize, data.len());
+        aplib_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn aplib_respects_smaller_chunk_size() {
+        // 8 KiB chunks instead of 16 KiB — host-side knob, stub unchanged.
+        let data: Vec<u8> = (0..(APLIB_CHUNK_INPUT + 1024))
+            .map(|i| (i & 0xff) as u8)
+            .collect();
+        let entry = build_aplib_entry("SMALL.BIN", 0x20, 0, &data, 8192).unwrap();
+        assert!(
+            entry.chunks.len() >= 3,
+            "8 KiB chunk should split 17 KiB payload into ≥3 chunks, got {}",
+            entry.chunks.len()
+        );
+        for c in &entry.chunks {
+            assert!(c.uncompressed_size as usize <= 8192);
+        }
         aplib_roundtrip(vec![entry]);
     }
 
@@ -816,7 +866,7 @@ mod tests {
             .map(|i| {
                 let name = format!("F{i:04}.TXT");
                 let data = format!("contents number {i}\n").into_bytes();
-                build_stored_entry(&name, 0x20, 0, &data).unwrap()
+                build_stored_entry(&name, 0x20, 0, &data, STORED_TEST_CHUNK).unwrap()
             })
             .collect();
         roundtrip(files);
@@ -834,7 +884,7 @@ mod tests {
     #[test]
     fn header_crc_detects_flip() {
         let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
-        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"a").unwrap()];
+        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"a", STORED_TEST_CHUNK).unwrap()];
         let mut buf = Vec::new();
         a.write(&mut buf).unwrap();
         // Flip a bit inside the header (algorithm byte at offset 5).

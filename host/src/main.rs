@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use doskrunch::{archive, inspect, pack, unpack};
+use doskrunch::archive::APLIB_CHUNK_INPUT;
 
 #[derive(Parser)]
 #[command(name = "doskrunch", about = "Build self-extracting DOS .EXE archives.")]
@@ -15,10 +16,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Build a self-extracting DOS .EXE from the given input files.
+    ///
+    /// Directory inputs are walked recursively; only regular files are
+    /// included. Symlinks are skipped. Files extract into the current
+    /// directory at runtime regardless of their position in the source
+    /// tree (flat extraction); two files with the same basename across
+    /// different subdirectories get FAT-style `~N` dedupe suffixes.
     Pack {
         /// Path of the .EXE to write.
         output: PathBuf,
-        /// Input files (directories not yet supported; lands in phase 4).
+        /// Input files or directories. Directories are walked
+        /// recursively for regular files.
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
         /// Compression algorithm. Defaults to `aplib`; `stored`
@@ -33,6 +41,13 @@ enum Cmd {
         /// default reproducible-build behaviour.
         #[arg(long)]
         preserve_timestamps: bool,
+        /// Max uncompressed bytes per chunk. Default 16384 (matches the
+        /// stub's BSS scratch). Smaller values give finer-grained
+        /// progress and slightly lower host RAM during pack at a small
+        /// compression-ratio cost; larger values are rejected because
+        /// the 16-bit stub's small-model data segment can't hold them.
+        #[arg(long, default_value_t = APLIB_CHUNK_INPUT)]
+        chunk_size: usize,
     },
     /// Extract a doskrunch SFX on the host (no DOS required).
     Unpack {
@@ -107,13 +122,32 @@ fn main() -> Result<()> {
             algo,
             target,
             preserve_timestamps,
-        } => pack::pack(pack::PackOptions {
-            output,
-            inputs,
-            algorithm: algo.to_archive(),
-            target: target.to_archive(),
-            preserve_timestamps,
-        }),
+            chunk_size,
+        } => {
+            // Validate at the CLI boundary so the user gets a clean
+            // error message rather than the library-layer assert.
+            let max_chunk = match algo {
+                AlgoArg::Aplib => APLIB_CHUNK_INPUT,
+                AlgoArg::Stored => u16::MAX as usize,
+                AlgoArg::Lzsa2 | AlgoArg::Lzma => APLIB_CHUNK_INPUT,
+            };
+            if !(1..=max_chunk).contains(&chunk_size) {
+                bail!(
+                    "--chunk-size must be in 1..={} for --algo {} (got {})",
+                    max_chunk,
+                    algo.to_archive().name(),
+                    chunk_size
+                );
+            }
+            pack::pack(pack::PackOptions {
+                output,
+                inputs,
+                algorithm: algo.to_archive(),
+                target: target.to_archive(),
+                preserve_timestamps,
+                chunk_size,
+            })
+        }
         Cmd::Unpack { input, dest } => unpack::unpack(unpack::UnpackOptions { input, dest }),
         Cmd::Inspect { input } => inspect::inspect(inspect::InspectOptions { input }),
         Cmd::ListTargets => {
