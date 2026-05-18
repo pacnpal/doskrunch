@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
+use doskrunch::archive::APLIB_CHUNK_INPUT;
 use doskrunch::{archive, inspect, pack, unpack};
 
 #[derive(Parser)]
@@ -15,10 +16,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Build a self-extracting DOS .EXE from the given input files.
+    ///
+    /// Directory inputs are walked recursively; only regular files are
+    /// included. Symlinks are skipped (whether named as a top-level
+    /// input or found during the walk). Files extract into the current
+    /// directory at runtime regardless of their position in the source
+    /// tree (flat extraction); two files with the same basename across
+    /// different subdirectories get FAT-style `~N` dedupe suffixes.
+    /// The output path itself is excluded from the walk so re-running
+    /// `pack dir/OUT.EXE dir/` doesn't pack a previous SFX into the
+    /// new one.
     Pack {
         /// Path of the .EXE to write.
         output: PathBuf,
-        /// Input files (directories not yet supported; lands in phase 4).
+        /// Input files or directories. Directories are walked
+        /// recursively for regular files.
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
         /// Compression algorithm. Defaults to `aplib`; `stored`
@@ -33,6 +45,16 @@ enum Cmd {
         /// default reproducible-build behaviour.
         #[arg(long)]
         preserve_timestamps: bool,
+        /// Max uncompressed bytes per chunk. Algorithm-dependent
+        /// ceiling: aplib ≤ 16384 (the 8086 stub's BSS scratch);
+        /// stored ≤ 65535 (the per-chunk u16 size field). Default
+        /// 16384. Today pack reads each input fully into memory before
+        /// encoding, so this knob controls archive layout (chunk count,
+        /// per-chunk framing overhead) and the transient encode buffer,
+        /// not peak host RAM; the stub's RAM is bounded by its BSS
+        /// regardless of the value here.
+        #[arg(long, default_value_t = APLIB_CHUNK_INPUT)]
+        chunk_size: usize,
     },
     /// Extract a doskrunch SFX on the host (no DOS required).
     Unpack {
@@ -107,13 +129,39 @@ fn main() -> Result<()> {
             algo,
             target,
             preserve_timestamps,
-        } => pack::pack(pack::PackOptions {
-            output,
-            inputs,
-            algorithm: algo.to_archive(),
-            target: target.to_archive(),
-            preserve_timestamps,
-        }),
+            chunk_size,
+        } => {
+            // Validate `--chunk-size` only for shipped algorithms so
+            // `--algo lzma --chunk-size 99999` surfaces the more
+            // useful "lzma lands in phase 5" error from pack() rather
+            // than a chunk-size error against a placeholder ceiling.
+            // The shipped-algo check inside pack() runs first and
+            // returns the deferred-algorithm bail; chunk-size errors
+            // are only reachable for `stored` and `aplib`.
+            let max_chunk: Option<usize> = match algo {
+                AlgoArg::Aplib => Some(APLIB_CHUNK_INPUT),
+                AlgoArg::Stored => Some(u16::MAX as usize),
+                AlgoArg::Lzsa2 | AlgoArg::Lzma => None,
+            };
+            if let Some(max) = max_chunk {
+                if !(1..=max).contains(&chunk_size) {
+                    bail!(
+                        "--chunk-size must be in 1..={} for --algo {} (got {})",
+                        max,
+                        algo.to_archive().name(),
+                        chunk_size
+                    );
+                }
+            }
+            pack::pack(pack::PackOptions {
+                output,
+                inputs,
+                algorithm: algo.to_archive(),
+                target: target.to_archive(),
+                preserve_timestamps,
+                chunk_size,
+            })
+        }
         Cmd::Unpack { input, dest } => unpack::unpack(unpack::UnpackOptions { input, dest }),
         Cmd::Inspect { input } => inspect::inspect(inspect::InspectOptions { input }),
         Cmd::ListTargets => {

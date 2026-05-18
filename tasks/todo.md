@@ -159,7 +159,127 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 
 ## Phase 4: chunked extraction, large payloads
 
-Not started.
+The chunked decoder (`stubs/src/stub.c::main` per-chunk loop) and
+the chunked encoder shipped in Phase 2/3: `build_aplib_entry` split
+input at `APLIB_CHUNK_INPUT = 16 KiB`, and `build_stored_entry` split
+at the per-chunk u16 ceiling (`u16::MAX`). Phase 4's `--chunk-size`
+flag exposes both splitters as a user-tunable parameter (default
+16384, capped per-algorithm: aplib ≤ 16384, stored ≤ u16::MAX). FAT
+timestamp restoration and 8.3 mangling-with-warning shipped in Phase
+1/2. Phase 4 fills the user-facing input surface and adds the
+verify-gate tests PLAN.md §10 specifies.
+
+- [x] Directory walking in `host/src/pack.rs` — recursive walk via
+      `expand_inputs` + `walk_dir`. Symlinks skipped whether named as
+      a top-level input or found during the walk (no follow). The
+      output path is excluded from the walk so `pack dir/OUT.EXE dir/`
+      doesn't pack a previous SFX into the new one. Each `read_dir`
+      result sorted per directory so the walk itself is reproducible
+      across hosts; pack's downstream "sort by mangled 8.3" pass is
+      what guarantees the on-disk byte sequence is identical across
+      runs. `read_dir` iteration errors bubble up rather than being
+      silently dropped — a partial-walk would silently produce an
+      incomplete SFX otherwise.
+- [x] `--chunk-size <bytes>` CLI flag. Default 16384 (= stub BSS
+      budget); validated at the CLI layer to `1..=16384` for aplib,
+      `1..=u16::MAX` for stored. CLI validation is gated on
+      shipped algorithms, so `--algo lzma --chunk-size 99999` returns
+      the "lzma lands in phase 5" bail from `pack()` rather than a
+      chunk-size error against a placeholder ceiling. Stub unchanged —
+      the on-disk archive records per-chunk sizes that the stub reads
+      back as-is. Because pack reads each input fully into memory
+      before encoding, the value controls archive layout (chunk count,
+      framing overhead) and the transient encode buffer, NOT peak host
+      RAM. 32 KiB default explicitly **not** taken in Phase 4 — see
+      the "subtle issues" note in the Phase 4 brief; bumping default
+      requires either a memory-model change in the stub or DOS-side
+      heap allocation, neither of which the verify gate asks for.
+- [x] Test helpers consolidated: `WaitError`, `wait_with_timeout`,
+      `locate_case_insensitive`, `repo_root` moved to
+      `host/tests/common/mod.rs`. Each `dosbox_*.rs` keeps its own
+      `dosbox.conf` template and timeout inline (varies per test).
+      Crosses the 6+ files threshold called out in the Phase 3 PR
+      review: 6 existing dosbox_*.rs + 1 benchmark + 3 new (2 MB,
+      timestamps, stored-max-chunk) = 10 callers.
+- [x] `host/tests/dosbox_2mb_memsize2.rs` — `#[ignore]`-gated PLAN.md
+      §10 Phase 4 Verify gate. 2 MiB compressible synthetic payload
+      packed at each tier; DOSBox-X run with `memsize=2`,
+      `xms=false`, `ems=false`, `umb=false`. Asserts byte-identical
+      extraction. Confirms the chunked decoder keeps the SFX working
+      set bounded by the stub's small-model BSS (~35 KiB) — payload
+      is never resident in conventional RAM, the stub streams it
+      chunk-by-chunk.
+- [x] `host/tests/dosbox_timestamps.rs` — `#[ignore]`-gated PLAN.md
+      §10 Phase 4 Verify gate. Two cases: (1) pinned source mtime
+      (2024-05-16 12:34:56 UTC, on a FAT 2s boundary) round-trips
+      through pack → DOSBox-X → host `fs::metadata`, truncated to 2s.
+      (2) Pre-1980 mtime gets clamped to the 1980-01-01 FAT epoch
+      endpoint — defends the `fat_time::unix_to_fat` clamp end-to-end
+      so a regression that removes it would fail this gate. Source
+      mtime is set via `filetime::set_file_mtime` to a fixed value
+      rather than wall-clock-now, so the test is stable across reruns
+      and across CI host clocks.
+- [x] `host/tests/dosbox_stored_max_chunk.rs` — `#[ignore]`-gated
+      DOSBox-X gate. 200 KiB payload packed with `--algo stored
+      --chunk-size 65535 --target 8086`, run under `cputype=8086`.
+      Forces multiple iterations of the stub's `copy_bytes` loop per
+      chunk (chunk size 65535 > BUF_SIZE 16384). The aplib gates
+      exercise a different stub path (`g_src` + `aplib_depack` +
+      `g_buf`), so this is the only end-to-end coverage of the
+      stored multi-iteration `copy_bytes` branch.
+- [x] Host-side roundtrip tests in `host/tests/roundtrip.rs` for the
+      new flag and walker:
+      `pack_walks_directory_recursively`,
+      `directory_pack_is_deterministic_across_two_invocations`,
+      `chunk_size_flag_respected_end_to_end`,
+      `chunk_size_above_stub_budget_for_aplib_is_rejected`,
+      `chunk_size_above_u16_for_stored_is_rejected`,
+      `stored_max_chunk_size_roundtrips_via_host_unpack`.
+- [x] CLI help (`host/src/main.rs::Cmd::Pack`) documents directories
+      are walked recursively, files extract flat (no subdir recreation
+      on DOS), and `--chunk-size` defaults to 16 KiB. The "directories
+      not yet supported" placeholder is gone.
+
+**Phase 4 verify**
+
+- [x] `cargo test --workspace` green (50+ unit + 13 integration:
+      10 roundtrip + 3 aplib_roundtrip; ignored DOSBox-X gates
+      remain gated).
+- [x] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
+      extracts byte-identical fixtures and payloads under
+      `cputype=8086`, `cputype=386`, `cputype=pentium` across the
+      original six Phase 3 gates plus the three new Phase 4 gates
+      (2 MB memsize=2 + timestamps + stored-max-chunk). All 11
+      ignored gates pass locally under dosbox-x 2026.05.02. CI's
+      `dosbox-x-integration` job runs the same set on Ubuntu 24.04.
+- [x] `cargo run -- pack out.exe some/dir/` walks the directory,
+      packs every regular file under it in deterministically-sorted
+      order, byte-identical across reruns.
+- [x] Stub blob sizes unchanged from Phase 3 (the stub is untouched in
+      Phase 4 — `--chunk-size` is a host-side knob only; the stub
+      reads per-chunk `usize`/`csize` from the archive header
+      verbatim).
+
+**Not done in Phase 4 (deferred deliberately)**
+
+- Default chunk size bump to 32 KiB. PLAN.md asks for it but the
+  small-model DS budget (BSS ~35 KB at 16 KiB; ~52 KB at 32 KiB)
+  doesn't have the headroom without either compact memory model or
+  DOS-heap allocation. Today `--chunk-size` lets stored-mode users
+  pick a value up to u16::MAX (the default 16384 is below stored's
+  ceiling), and lets either algorithm pick a smaller chunk for
+  archive-layout tuning; aplib's ceiling IS the default, so an
+  aplib-default user can't tune upward without the stub changes
+  above. Defaulting up is a focused follow-up that requires the
+  memory-model / DOS-heap decision first.
+- Subdirectory recreation in the stub. PLAN.md §8 hints at it for
+  directory mode, but Phase 4 Verify doesn't require it. Flat
+  extraction is the simpler shipping choice and is documented in
+  the CLI help. Phase 6 polish can revisit.
+- INT 1Ah cycle-counter instrumentation for the Phase 3 perf gate.
+  Not bundled into Phase 4 per the working brief; the perf-gate row
+  above stays open across phases until the user picks a direction.
+
 
 ## Phase 5: LZMA + remaining tiers
 

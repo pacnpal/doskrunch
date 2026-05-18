@@ -45,8 +45,8 @@ fn pack_then_unpack_is_byte_identical_aplib() {
         let name = src.file_name().unwrap().to_str().unwrap().to_uppercase();
         let dst = extracted.join(&name);
         let original = std::fs::read(src).unwrap();
-        let actual = std::fs::read(&dst)
-            .unwrap_or_else(|e| panic!("missing {}: {}", dst.display(), e));
+        let actual =
+            std::fs::read(&dst).unwrap_or_else(|e| panic!("missing {}: {}", dst.display(), e));
         assert_eq!(original, actual, "content mismatch for {name}");
     }
 }

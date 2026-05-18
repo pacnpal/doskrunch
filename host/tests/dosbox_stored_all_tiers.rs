@@ -26,17 +26,14 @@
 //! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
+
+mod common;
+use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(120);
-
-fn repo_root() -> PathBuf {
-    let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    host.parent().expect("host has a parent").to_path_buf()
-}
 
 fn fixtures() -> &'static [&'static str] {
     &["hello.txt", "numbers.txt", "random.bin", "empty.bin"]
@@ -63,7 +60,10 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             .args(["--algo", "stored", "--target", tier])
             .status()
             .expect("spawn doskrunch pack");
-        assert!(status.success(), "doskrunch pack failed for tier {tier}: {status:?}");
+        assert!(
+            status.success(),
+            "doskrunch pack failed for tier {tier}: {status:?}"
+        );
 
         let conf_path = work_path.join("dosbox.conf");
         fs::write(
@@ -102,9 +102,9 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             Err(WaitError::Timeout) => panic!(
                 "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (tier {tier}); child was killed"
             ),
-            Err(WaitError::Wait(e)) => panic!(
-                "waiting on dosbox-x failed: {e} (tier {tier}); child was killed"
-            ),
+            Err(WaitError::Wait(e)) => {
+                panic!("waiting on dosbox-x failed: {e} (tier {tier}); child was killed")
+            }
         };
         assert!(
             dosbox_status.success(),
@@ -115,58 +115,20 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             let original = fs::read(fixtures_dir.join(fixture))
                 .unwrap_or_else(|e| panic!("read fixture {fixture}: {e}"));
             let extracted_name = fixture.to_ascii_uppercase();
-            let extracted = locate_case_insensitive(work_path, &extracted_name)
-                .unwrap_or_else(|| panic!(
-                    "missing extracted file {extracted_name} on tier {tier}"
-                ));
-            let body = fs::read(&extracted)
-                .unwrap_or_else(|e| panic!("read extracted {} (tier {tier}): {e}", extracted.display()));
+            let extracted =
+                locate_case_insensitive(work_path, &extracted_name).unwrap_or_else(|| {
+                    panic!("missing extracted file {extracted_name} on tier {tier}")
+                });
+            let body = fs::read(&extracted).unwrap_or_else(|e| {
+                panic!("read extracted {} (tier {tier}): {e}", extracted.display())
+            });
             assert_eq!(
-                body, original,
+                body,
+                original,
                 "tier {tier}: extracted {} differs from fixture {}",
                 extracted.display(),
                 fixture
             );
         }
     }
-}
-
-enum WaitError {
-    Timeout,
-    Wait(std::io::Error),
-}
-
-fn wait_with_timeout(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> Result<ExitStatus, WaitError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(s)) => return Ok(s),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(WaitError::Timeout);
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(WaitError::Wait(e));
-            }
-        }
-    }
-}
-
-fn locate_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).ok()? {
-        let entry = entry.ok()?;
-        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
-            return Some(entry.path());
-        }
-    }
-    None
 }
