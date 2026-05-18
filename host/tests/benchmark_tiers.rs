@@ -1,18 +1,22 @@
-//! Phase 3 §10 benchmark gate: pack a 500 KiB synthetic mixed-content
-//! payload at each shipped tier, run each SFX under headless DOSBox-X
-//! at the matching cputype, wall-clock-time the run, and write the
-//! results to `tests/benchmarks/results.md`.
+//! Phase 3 §10 timing harness: measure end-to-end SFX wall-clock for a
+//! 500 KiB synthetic mixed-content payload at each shipped tier under
+//! headless DOSBox-X and regenerate `tests/benchmarks/results.md`.
 //!
-//! PLAN.md §10 expects: 386 ≈ 2–4× 8086, pentium ≈ 5–10× 8086. The brief
-//! is explicit that wall-clock from the host is the v1 measurement — no
-//! INT 1Ah cycle-counter instrumentation in the stub yet (Phase 4+).
+//! NOT a correctness gate — this file is purely a measurement tool. The
+//! large-payload multi-chunk correctness gate lives in
+//! `host/tests/dosbox_aplib_large.rs` (runs in CI under `--ignored`,
+//! asserts byte-identical extraction at every tier). PLAN.md §10's
+//! 2–4× / 5–10× speedup ratios are tracked separately in
+//! `tests/benchmarks/results.md` and `tasks/todo.md` — see the perf-gate
+//! row in todo.md for the current "not met, awaiting user direction"
+//! state. The harness here reports raw wall-clock; it does not assert
+//! on the ratio so a measurement-substrate miss can't block the PR.
 //!
-//! `#[ignore]`-gated AND env-var-gated: needs `dosbox-x` installed
-//! locally, takes minutes to run, and writes a tracked file. CI's
+//! Double-gated: `#[ignore]` AND `DOSKRUNCH_RUN_BENCHMARK=1`. CI's
 //! `dosbox-x-integration` job runs `cargo test --workspace -- --ignored`
-//! which would otherwise execute this test and silently rewrite the
-//! committed `tests/benchmarks/results.md`; the `DOSKRUNCH_RUN_BENCHMARK`
-//! env-var check gates that off. Run locally with:
+//! and would otherwise execute this test and silently rewrite the
+//! committed `tests/benchmarks/results.md`; the env-var check gates
+//! that off. Run locally with:
 //!
 //!     DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy \
 //!         cargo test --test benchmark_tiers -- --ignored --nocapture
@@ -30,13 +34,7 @@
 //!     including DOS startup overhead (a few hundred ms regardless of
 //!     payload).
 //!   * The depacker is a small fraction of the SFX run. Most wall-clock
-//!     time is DOS file I/O through INT 21h. The expected speedup over
-//!     8086 is bounded by how much of the run is in the depacker vs the
-//!     file-I/O loop.
-//!   * If the observed ratios miss the PLAN.md gate, the regression
-//!     surface is most likely DOSBox-X scheduling, not the asm port —
-//!     verify on real hardware (86Box / a real 486 or Pentium box)
-//!     before debugging the stub. See PLAN.md §10 Phase 3.
+//!     time is DOS file I/O through INT 21h.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -250,24 +248,15 @@ fn benchmark_tier_decompression() {
 
     write_results_markdown(&root, &results, &payload);
 
-    // INTENTIONALLY REPORT-ONLY. The harness times runs and writes
-    // numbers to results.md, but does NOT assert the ratios against
-    // PLAN.md's 2–4× / 5–10× expectation. The honest current state:
-    //   * PLAN.md §10 Phase 3 Verify lists those ratios as expected
-    //     benchmark outcomes.
-    //   * The asm ports verifiably work — the four `dosbox_aplib_*`
-    //     correctness gates extract byte-identical at every tier.
-    //   * Wall-clock measurement under DOSBox-X `cycles=auto` doesn't
-    //     reproduce those ratios; the cause is in the measurement
-    //     substrate (per-cputype emulation cost variance + DOS startup
-    //     + INT 21h I/O dominating the small-payload run), not the
-    //     depacker.
-    // The benchmark surfaces the numbers so a reviewer can see the
-    // current state without asserting against an unmet gate that
-    // would block this PR. The unmet gate is acknowledged explicitly
-    // in tasks/todo.md's Phase 3 Verify section and in results.md's
-    // caveats block — the user can direct what to do next (accept,
-    // instrument, or block).
+    // Print the ratios for inspection. This is a measurement harness,
+    // not a gate — the byte-identical correctness check lives in
+    // dosbox_aplib_large.rs (and runs in CI under --ignored without
+    // requiring the env var). The PLAN.md §10 2–4× / 5–10× speedup
+    // expectation is tracked in tasks/todo.md as an unmet perf gate
+    // pending real-iron or cycle-instrumented measurement; this
+    // harness doesn't assert it because asserting against a target
+    // that's unmet for measurement-substrate reasons would block CI
+    // without flagging a real depacker bug.
     let baseline = results[0].wall_clock_min_ms.max(1);
     for r in &results {
         let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
@@ -339,13 +328,15 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
          * PLAN.md §10 Phase 3 Verify explicitly lists \"386 is 2-4x faster than 8086, pentium \
            is 5-10x faster\" as the expected benchmark outcome — it does not qualify that as \
            real-hardware-only. The numbers above miss that gate. The asm ports verifiably \
-           extract byte-identical payloads at every tier (the four DOSBox-X `dosbox_aplib_*` \
-           gates pass), so the gap is in the measurement, not the depacker: DOSBox-X \
-           `cycles=auto` auto-tunes throughput per cputype, and DOS startup + INT 21h file I/O \
-           dominate the 2-second wall-clock. Closing the gate needs either real-iron timing \
-           (86Box or a real 386/Pentium box) or stub-side INT 1Ah cycle-counter instrumentation. \
-           Phase 3 ships the ports and the correctness gates; the perf gate is acknowledged \
-           unmet here for the user to direct.\n\
+           extract byte-identical payloads at every tier (the DOSBox-X correctness gates — \
+           `dosbox_8086`, `dosbox_aplib_8086`, `dosbox_aplib_386`, `dosbox_aplib_pentium`, \
+           and the multi-chunk `dosbox_aplib_large` — all pass), so the gap is in the \
+           measurement, not the depacker: DOSBox-X `cycles=auto` auto-tunes throughput per \
+           cputype, and DOS startup + INT 21h file I/O dominate the 2-second wall-clock. \
+           Closing the gate needs either real-iron timing (86Box or a real 386/Pentium box) \
+           or stub-side INT 1Ah cycle-counter instrumentation. Phase 3 ships the ports and \
+           the correctness gates; the perf gate is acknowledged unmet here for the user to \
+           direct.\n\
          * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI's \
            `cargo test --workspace -- --ignored` run skips it via the env-var check, so this \
            file is only regenerated by a local opt-in run. Commit a refreshed copy when the \

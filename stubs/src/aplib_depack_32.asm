@@ -20,8 +20,11 @@
 ;      NASM auto-emits 0x66 (operand-size) and 0x67 (address-size)
 ;      prefixes wherever 32-bit register names appear under bits 16, so
 ;      the assembled bytes are real-mode-safe even though the body is
-;      written in 32-bit form. Disassembly check:
-;        ndisasm -b 16 aplib_depack_32.obj
+;      written in 32-bit form. Disassembly check (use a flat binary —
+;      `ndisasm` treats its input as raw bytes and would mis-decode OMF
+;      object headers / fixup records as instructions):
+;        nasm -f bin stubs/src/aplib_depack_32.asm -o /tmp/depack32.bin
+;        ndisasm -b 16 /tmp/depack32.bin
 ;    * `_TEXT` segment `public class=CODE use16` so Open Watcom wlink
 ;      links this OMF object alongside Watcom-compiled C in a small-model
 ;      executable.
