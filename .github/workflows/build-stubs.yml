@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - "stubs/src/**"
+      - "stubs/blobs/*.bin"
       - "stubs/Makefile"
       - "stubs/Dockerfile"
       - ".github/workflows/build-stubs.yml"
   pull_request:
     paths:
       - "stubs/src/**"
+      - "stubs/blobs/*.bin"
       - "stubs/Makefile"
       - "stubs/Dockerfile"
       - ".github/workflows/build-stubs.yml"
@@ -25,7 +27,11 @@ jobs:
         run: docker build -t doskrunch-watcom stubs/
 
       - name: Build stub blobs
-        run: docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
+        # Run as the runner user, not root, so the mounted `stubs/`
+        # directory doesn't end up with root-owned files that break
+        # the diff/upload steps below (or trip up contributors running
+        # the same command locally).
+        run: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
 
       - name: Verify committed blob matches the rebuild
         run: |

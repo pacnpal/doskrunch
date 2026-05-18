@@ -8,7 +8,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Hard cap on how long DOSBox-X is allowed to run. The stub processes
+/// 4 tiny fixtures inside an 8086 emulator; even at 4.77 MHz this is
+/// well under a second. Two minutes is generous enough that runner
+/// flake won't trip it, tight enough that a hung child fails fast
+/// instead of stalling until the GH Actions job-level timeout.
+const DOSBOX_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is the host crate (`host/`); repo root is one up.
@@ -73,7 +82,7 @@ fn extracts_fixtures_under_8086_cputype() {
     )
     .expect("write dosbox.conf");
 
-    let dosbox_status = Command::new("dosbox-x")
+    let mut dosbox = Command::new("dosbox-x")
         .arg("-conf")
         .arg(&conf_path)
         .arg("-exit")
@@ -81,8 +90,10 @@ fn extracts_fixtures_under_8086_cputype() {
         // SDL needs a display target; the dummy video driver keeps it
         // happy under a headless GH Actions runner.
         .env("SDL_VIDEODRIVER", "dummy")
-        .status()
+        .spawn()
         .expect("spawn dosbox-x (is it installed?)");
+    let dosbox_status = wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT)
+        .expect("dosbox-x timed out and was killed");
     assert!(
         dosbox_status.success(),
         "dosbox-x exited non-zero: {dosbox_status:?}",
@@ -105,6 +116,32 @@ fn extracts_fixtures_under_8086_cputype() {
             extracted.display(),
             fixture
         );
+    }
+}
+
+/// Poll `try_wait` until the child exits or `timeout` elapses. On
+/// timeout, send SIGKILL and reap so the test fails loudly instead of
+/// hanging until GitHub's job-level cap. Returns `Some(status)` on a
+/// clean exit, `None` if the child had to be killed.
+fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 
