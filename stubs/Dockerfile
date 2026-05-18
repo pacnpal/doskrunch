@@ -1,13 +1,12 @@
 # doskrunch stub build image.
 #
-# Open Watcom v2 ships a self-contained Linux x86-64 build as a snapshot
-# tarball on the project's GitHub releases. The 'Current-build' tag is
-# the only published release, and its assets are overwritten in place —
-# there are no semver-tagged binary releases to pin. To keep the stub
-# blob bit-reproducible we pin OW_SHA256 to the snapshot we built
-# against; the build aborts if the upstream asset is re-uploaded with
-# different bytes. Bump both OW_URL and OW_SHA256 together when we
-# explicitly want to upgrade the toolchain.
+# Open Watcom v2 publishes monthly immutable releases (e.g.
+# 2026-05-02-Build) alongside the rolling 'Current-build' tag. We pin
+# the URL to a dated tag *and* verify a SHA256 of the snapshot so the
+# build is bit-reproducible: the dated asset is never overwritten
+# upstream, and the hash check fails loudly if something tampers with
+# the download in transit. Bump both OW_URL and OW_SHA256 together
+# when we explicitly want a newer toolchain.
 #
 # The previously-referenced volkertb/debian-open-watcom image was
 # removed from Docker Hub, so we source the toolchain directly from
@@ -17,8 +16,8 @@
 # Use:      docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
 FROM debian:bookworm-slim
 
-ARG OW_URL=https://github.com/open-watcom/open-watcom-v2/releases/download/Current-build/ow-snapshot.tar.xz
-ARG OW_SHA256=ec0bebd973ee339dc0425db184ab82a20e0fefee8be839ec75a366f47b12c86a
+ARG OW_URL=https://github.com/open-watcom/open-watcom-v2/releases/download/2026-05-02-Build/ow-snapshot.tar.xz
+ARG OW_SHA256=a339a23ab346b6e632f870aaa4c36a5424bb923197b96348e367ea07b84936cc
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils make \
