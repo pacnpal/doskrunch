@@ -22,22 +22,25 @@ on the requested `--target`.
 | `aplib_386.bin`         | `-3` | `aplib_depack_32.asm` (203 B 32-bit size-opt port) | ≤6 KB target / 10 KB hard |
 | `aplib_486.bin`         | `-4` | `aplib_depack_32.asm` (depacker is `cpu 386`, runs on every 32-bit CPU) | ≤6 KB target / 10 KB hard |
 | `aplib_pentium.bin`     | `-5` | `aplib_depack_p5.asm` (252 B 32-bit speed-opt port, no manual U/V scheduling) | ≤8 KB target / 12 KB hard |
-| `aplib_pentium-mmx.bin` | `-5` | `aplib_depack_p5.asm` (MMX-accelerated depacker copy paths deferred — see notes) | ≤8 KB target / 12 KB hard |
-| `aplib_p2.bin`          | `-6` | `aplib_depack_p5.asm` (P6 OoO codegen in C; depacker unchanged) | ≤8 KB target / 12 KB hard |
-| `aplib_p3.bin`          | `-6` | `aplib_depack_p5.asm` (SSE-accelerated depacker copy paths deferred) | ≤10 KB target / 14 KB hard |
+| `aplib_pentium-mmx.bin` | `-5` | `aplib_depack_mmx.asm` (MMX 8-byte MOVQ block copy when offset >= 8 and length >= 8; scalar `rep movsb` otherwise; EMMS on exit) | ≤8 KB target / 12 KB hard |
+| `aplib_p2.bin`          | `-6` | `aplib_depack_mmx.asm` (same depacker as pentium-mmx; -6 codegen for the surrounding C) | ≤8 KB target / 12 KB hard |
+| `aplib_p3.bin`          | `-6` | `aplib_depack_mmx.asm` (SSE depacker variant exists in `aplib_depack_sse.asm` but is not wired in; see notes) | ≤10 KB target / 14 KB hard |
 
-Why pentium-mmx/p2/p3 ship without vectorized depacker copy paths today:
-aPLib literals are emitted one byte at a time (`movsb`) gated on a
-bit-decode, and match copies use `rep movsb` over ranges where the
-source can overlap the destination (`offset < length`). MOVQ and
-MOVAPS don't honor that overlap, so a naive MMX/SSE copy would corrupt
-match ranges on the hot path. PLAN.md §10 anticipates a tiered fix
-(scalar fallback when `offset < 8` / `offset < 16`, MMX/SSE otherwise);
-the PLAN's literal-run case doesn't exist in aPLib's stream the way
-it does in LZMA/LZSA, so the practical win is limited to a fraction of
-match copies. Karpathy: measure before optimizing; tier blobs ship with
-the existing depacker today, and an MMX/SSE depacker variant lands as
-a follow-up if benchmarks justify it.
+On the MMX gate: aPLib match copies use `rep movsb` over ranges where
+the source can overlap the destination (`offset < length`, the
+canonical compression-of-zeros case). MOVQ doesn't honor that overlap,
+so the MMX path only fires when offset >= 8 AND length >= 8. Short
+matches stay on the scalar path. EMMS is emitted on exit so any
+future x87 user in the stub doesn't see stale MMX tag words.
+
+On SSE for p3: `aplib_depack_sse.asm` ships in the source tree with a
+MOVUPS 16-byte block-copy path, but it isn't linked into
+`aplib_p3.bin`. Under DOSBox-X 2026.05.02 `cputype=pentium_iii` the
+SSE depacker hangs on multi-chunk payloads bigger than the small-
+fixture gate. NASM disassembly of the loop encoding looks right, so
+the symptom is most likely a DOSBox-X SSE emulation gap rather than a
+depacker bug. Verifying on a real Pentium III box or a different
+emulator would prove or disprove that. Left for follow-up.
 
 LZMA stub blobs (`lzma_<tier>.bin` for 386 .. p3) are NOT unified
 with the aplib blob via runtime dispatch — the LZMA range decoder and

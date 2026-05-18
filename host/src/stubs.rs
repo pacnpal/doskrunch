@@ -11,14 +11,17 @@
 //!   * `aplib_486.bin`         — wcc `-4` + `aplib_depack_32.asm` (the
 //!     32-bit depacker is `cpu 386`, a strict subset of 486).
 //!   * `aplib_pentium.bin`     — wcc `-5` + `aplib_depack_p5.asm`.
-//!   * `aplib_pentium-mmx.bin` — wcc `-5` + `aplib_depack_p5.asm`. MMX-
-//!     accelerated depacker copy paths are deferred (see stubs/Makefile
-//!     and PLAN.md §10 Phase 5 Verify); the blob exists today so the
-//!     host can dispatch on --target pentium-mmx and so a future swap
-//!     to an MMX depacker can land without changing this table.
-//!   * `aplib_p2.bin`          — wcc `-6` + `aplib_depack_p5.asm`.
-//!   * `aplib_p3.bin`          — wcc `-6` + `aplib_depack_p5.asm`. SSE
-//!     copy paths likewise deferred.
+//!   * `aplib_pentium-mmx.bin` — wcc `-5` + `aplib_depack_mmx.asm` (MMX
+//!     8-byte block copy when match offset and length are both >= 8;
+//!     scalar `rep movsb` for shorter or overlapping matches; EMMS on
+//!     exit so a future x87 user can't see stale MMX tag words).
+//!   * `aplib_p2.bin`          — wcc `-6` + `aplib_depack_mmx.asm`.
+//!   * `aplib_p3.bin`          — wcc `-6` + `aplib_depack_mmx.asm`. An
+//!     SSE-accelerated depacker variant lives in
+//!     `stubs/src/aplib_depack_sse.asm` but is NOT linked in: under
+//!     DOSBox-X 2026.05.02 `cputype=pentium_iii` the MOVUPS-based block
+//!     copy hangs on multi-chunk payloads; left for follow-up. See
+//!     `stubs/blobs/README.md` for the full deferral note.
 //!
 //! Each blob is a complete Watcom-built DOS .EXE that dispatches at
 //! runtime on the archive's algorithm byte and handles both `stored`

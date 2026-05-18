@@ -1,15 +1,20 @@
-//! Phase 3 multi-chunk correctness gate: pack a 500 KiB synthetic
-//! mixed-content payload with `--algo aplib` at each of the three
-//! shipped tiers, run the SFX under headless DOSBox-X at the matching
-//! `cputype=`, and assert byte-identical extraction.
+//! Multi-chunk correctness gate (Phase 3 initially, Phase 5 grew to
+//! cover all eight tiers): pack a 500 KiB synthetic mixed-content
+//! payload with `--algo aplib` at each shipped tier, run the SFX under
+//! headless DOSBox-X at the matching `cputype=`, and assert byte-
+//! identical extraction.
 //!
-//! The small-fixture DOSBox-X tests (`dosbox_aplib_{8086,386,pentium}.rs`)
-//! exercise the depacker on payloads that each fit inside a single
-//! 16 KiB aPLib chunk. This file fills the gap: at 500 KiB the payload
-//! is split across ~32 chunks per file, so the stub's chunk loop
-//! (read header → decompress into g_buf → write → repeat) and the host's
-//! `build_aplib_entry` chunk-cap logic both get exercised end-to-end on
-//! a real-mode CPU emulation.
+//! The small-fixture DOSBox-X tests (`dosbox_aplib_{8086,386,pentium}.rs`
+//! plus the Phase-5 `dosbox_aplib_new_tiers.rs`) exercise the depacker
+//! on payloads that each fit inside a single 16 KiB aPLib chunk. This
+//! file fills the gap: at 500 KiB the payload is split across ~32
+//! chunks per file, so the stub's chunk loop (read header → decompress
+//! into g_buf → write → repeat) and the host's `build_aplib_entry`
+//! chunk-cap logic both get exercised end-to-end on a real-mode CPU
+//! emulation. Phase 5's MMX/SSE depacker variants in pentium-mmx / p2
+//! / p3 also need multi-chunk coverage — without it a MOVQ / MOVUPS
+//! mid-chunk overflow could pass the single-chunk gate but corrupt
+//! later chunks.
 //!
 //! `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked;
 //! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
@@ -79,7 +84,19 @@ fn extracts_500kib_multichunk_payload_across_tiers() {
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
 
-    for (tier, cputype) in &[("8086", "8086"), ("386", "386"), ("pentium", "pentium")] {
+    // All eight shipped tiers. Spellings validated in
+    // dosbox_stored_all_tiers.rs's table comment.
+    let tiers: &[(&str, &str)] = &[
+        ("8086", "8086"),
+        ("286", "286"),
+        ("386", "386"),
+        ("486", "486"),
+        ("pentium", "pentium"),
+        ("pentium-mmx", "pentium_mmx"),
+        ("p2", "pentium_ii"),
+        ("p3", "pentium_iii"),
+    ];
+    for (tier, cputype) in tiers {
         let rundir = tempfile::tempdir().expect("rundir");
         let rundir_path = rundir.path();
         let sfx_path = rundir_path.join("OUT.EXE");

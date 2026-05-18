@@ -170,9 +170,9 @@ fn main() -> Result<()> {
             println!("386          shipped (perf gate pending; see tests/benchmarks/results.md)");
             println!("486          shipped");
             println!("pentium      shipped (perf gate pending; see tests/benchmarks/results.md)");
-            println!("pentium-mmx  shipped (MMX depacker copy paths deferred)");
-            println!("p2           shipped");
-            println!("p3           shipped (SSE depacker copy paths deferred)");
+            println!("pentium-mmx  shipped (MMX 8-byte block copy in depacker)");
+            println!("p2           shipped (P6 codegen + MMX depacker)");
+            println!("p3           shipped (P6 codegen + MMX depacker; SSE depacker variant deferred)");
             Ok(())
         }
         Cmd::ListAlgos => {

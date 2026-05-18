@@ -84,6 +84,14 @@ $(SRC)/aplib_depack_32.obj: $(SRC)/aplib_depack_32.asm
 $(SRC)/aplib_depack_p5.obj: $(SRC)/aplib_depack_p5.asm
 	$(NASM) -f obj -o $@ $<
 
+$(SRC)/aplib_depack_mmx.obj: $(SRC)/aplib_depack_mmx.asm
+	$(NASM) -f obj -o $@ $<
+
+# aplib_depack_sse.obj is intentionally not built today; the .asm is
+# kept on disk for follow-up investigation (see the p3-tier comment
+# below for the deferral note). Reintroduce this rule when the SSE
+# path is wired back in.
+
 # ----- 8086 tier -------------------------------------------------------
 
 # Compile in $(SRC) so wcc deposits the .obj next to the source.
@@ -172,19 +180,21 @@ $(OUTDIR)/aplib_pentium.bin: $(SRC)/stub_p5.obj $(SRC)/aplib_depack_p5.obj
 
 # ----- pentium-mmx tier ------------------------------------------------
 #
-# Same wcc -5 codegen as the pentium tier but a distinct blob so the
-# host can dispatch on --target pentium-mmx. The aplib depacker is
-# unchanged; future MMX-accelerated copy paths would land in a
-# separate aplib_depack_mmx.asm linked here in place of _p5.
+# wcc -5 codegen + MMX-accelerated aplib depacker (aplib_depack_mmx.asm).
+# The MMX path copies 8 bytes per MOVQ when the back-reference offset
+# is >= 8 (no overlap) and length is >= 8; otherwise falls back to the
+# same scalar rep movsb the pentium tier uses. EMMS-on-exit is emitted
+# unconditionally so a future x87-using caller can't see stale MMX tag
+# words.
 
 $(SRC)/stub_pmmx.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -fo=stub_pmmx.obj stub.c
 
-$(OUTDIR)/aplib_pentium-mmx.bin: $(SRC)/stub_pmmx.obj $(SRC)/aplib_depack_p5.obj
+$(OUTDIR)/aplib_pentium-mmx.bin: $(SRC)/stub_pmmx.obj $(SRC)/aplib_depack_mmx.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_pentium-mmx.exe \
-	  file $(SRC)/stub_pmmx.obj file $(SRC)/aplib_depack_p5.obj
+	  file $(SRC)/stub_pmmx.obj file $(SRC)/aplib_depack_mmx.obj
 	@cp $(OUTDIR)/aplib_pentium-mmx.exe $(OUTDIR)/aplib_pentium-mmx.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium-mmx.bin); \
 	  echo "aplib_pentium-mmx.bin: $$SZ bytes (target ≤8192, hard ceiling 12288)"; \
@@ -192,17 +202,18 @@ $(OUTDIR)/aplib_pentium-mmx.bin: $(SRC)/stub_pmmx.obj $(SRC)/aplib_depack_p5.obj
 
 # ----- p2 tier ---------------------------------------------------------
 #
-# Pentium Pro / P6 codegen. wcc -6 emits CMOV and (when profitable)
-# longer instruction sequences scheduled for P6's out-of-order engine.
+# Pentium Pro / P6 codegen for the C housekeeping (wcc -6: CMOV plus
+# whatever P6 OoO scheduling Watcom emits) and the MMX depacker
+# (P6 has MMX baseline). Same depacker as pentium-mmx.
 
 $(SRC)/stub_p6.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p6.obj stub.c
 
-$(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_p5.obj
+$(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_p2.exe \
-	  file $(SRC)/stub_p6.obj file $(SRC)/aplib_depack_p5.obj
+	  file $(SRC)/stub_p6.obj file $(SRC)/aplib_depack_mmx.obj
 	@cp $(OUTDIR)/aplib_p2.exe $(OUTDIR)/aplib_p2.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_p2.bin); \
 	  echo "aplib_p2.bin: $$SZ bytes (target ≤8192, hard ceiling 12288)"; \
@@ -210,18 +221,24 @@ $(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_p5.obj
 
 # ----- p3 tier ---------------------------------------------------------
 #
-# Same wcc -6 codegen as p2; distinct blob so the host can dispatch on
-# --target p3. Future SSE-accelerated copy paths would land in a
-# separate aplib_depack_sse.asm linked here in place of _p5.
+# wcc -6 codegen + MMX aplib depacker. The SSE depacker variant lives
+# in stubs/src/aplib_depack_sse.asm but is NOT linked in — under
+# DOSBox-X cputype=pentium_iii the MOVUPS-based block copy hangs on
+# multi-chunk payloads (the small-fixture gate passes, the 500 KiB
+# multi-chunk gate doesn't). NASM disassembly of the loop encoding
+# looks correct, so the symptom is most likely a DOSBox-X SSE
+# emulation gap rather than a depacker bug; left for follow-up
+# investigation. p3 still benefits from wcc -6 codegen for the
+# surrounding C housekeeping and the MMX path for long matches.
 
 $(SRC)/stub_p3.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p3.obj stub.c
 
-$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_p5.obj
+$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_mmx.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_p3.exe \
-	  file $(SRC)/stub_p3.obj file $(SRC)/aplib_depack_p5.obj
+	  file $(SRC)/stub_p3.obj file $(SRC)/aplib_depack_mmx.obj
 	@cp $(OUTDIR)/aplib_p3.exe $(OUTDIR)/aplib_p3.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_p3.bin); \
 	  echo "aplib_p3.bin: $$SZ bytes (target ≤10240, hard ceiling 14336)"; \
