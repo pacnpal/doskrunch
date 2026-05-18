@@ -32,7 +32,10 @@ jobs:
         run: cargo test --workspace --locked
 
   dosbox-x-integration:
-    runs-on: ubuntu-latest
+    # Pin the Ubuntu image: dosbox-x lives in 24.04's universe repo. If
+    # ubuntu-latest moves to a release where the package name or
+    # availability differs, the apt install below would break silently.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -51,9 +54,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-24.04-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ubuntu-latest-cargo-
+            ubuntu-24.04-cargo-
 
       - name: cargo test --workspace -- --ignored
         # The headless DOSBox-X test is `#[ignore]`-gated so contributors
