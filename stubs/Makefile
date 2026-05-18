@@ -8,20 +8,18 @@
 # Phase 2 ships one blob: `aplib_8086.bin`. It dispatches at runtime on
 # the archive's algorithm byte and handles both `stored` (0) and `aplib`
 # (1) chunks. The host returns the same blob for both algorithms on
-# `--target 8086`. The Phase 1 `stored_8086.bin` filename is retained
-# for now but built from the same source as `aplib_8086.bin`.
+# `--target 8086`.
 #
 # Usage:
 #   make all      # build every shipped variant
 #   make clean
 #
 # Driven by GNU make. The Dockerfile installs make and exports
-# WATCOM/PATH/INCLUDE/EDPATH so `wcc`/`wcl`/`wlink` resolve without
+# WATCOM/PATH/INCLUDE/EDPATH so `wcl` and `nasm` resolve without
 # further setup.
 
 OUTDIR  := blobs
 SRC     := src
-WCC     := wcc
 WCL     := wcl
 NASM    := nasm
 
@@ -37,13 +35,10 @@ all: $(OUTDIR)/aplib_8086.bin
 $(SRC)/aplib_depack_16.obj: $(SRC)/aplib_depack_16.asm
 	$(NASM) -f obj -o $@ $<
 
-$(SRC)/stub.obj: $(SRC)/stub.c
-	cd $(SRC) && $(WCC) $(CFLAGS_8086) -fo=stub.obj stub.c
-
-$(OUTDIR)/aplib_8086.bin: $(SRC)/stub.obj $(SRC)/aplib_depack_16.obj
+$(OUTDIR)/aplib_8086.bin: $(SRC)/stub.c $(SRC)/aplib_depack_16.obj
 	@mkdir -p $(OUTDIR)
 	$(WCL) $(CFLAGS_8086) -fe=$(OUTDIR)/aplib_8086.exe \
-	  $(SRC)/stub.obj $(SRC)/aplib_depack_16.obj
+	  $(SRC)/stub.c $(SRC)/aplib_depack_16.obj
 	@cp $(OUTDIR)/aplib_8086.exe $(OUTDIR)/aplib_8086.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_8086.bin); \
 	  echo "aplib_8086.bin: $$SZ bytes (target ≤4096, hard ceiling 8192)"; \
