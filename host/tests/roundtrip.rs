@@ -287,6 +287,35 @@ fn chunk_size_above_stub_budget_for_aplib_is_rejected() {
 }
 
 #[test]
+fn chunk_size_above_u16_for_stored_is_rejected() {
+    // Symmetric to the aplib-rejection case: stored allows up to
+    // u16::MAX (65535), so 65536 must bail at the CLI boundary with
+    // the same wording. Guards the algorithm-specific validation
+    // branch that the aplib test doesn't cover.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.bin");
+    std::fs::write(&src, b"x").unwrap();
+    let exe = tmp.path().join("o.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "stored",
+        "--target",
+        "8086",
+        "--chunk-size",
+        "65536",
+    ]);
+    let out = pack.output().unwrap();
+    assert!(
+        !out.status.success(),
+        "stored should reject chunk_size > u16::MAX"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("chunk-size") || stderr.contains("chunk_size"));
+    assert!(stderr.contains("65535") || stderr.contains("stored"));
+}
+
+#[test]
 fn inspect_runs() {
     let fixtures = fixtures_dir();
     let tmp = tempfile::tempdir().unwrap();

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -177,7 +177,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     }
 
     for (stored_name, src, meta) in entries {
-        let data = fs::read(&src).with_context(|| format!("read {}", src.display()))?;
+        let data = read_no_follow(&src).with_context(|| format!("read {}", src.display()))?;
         let timestamp = if opts.preserve_timestamps {
             let mtime_secs = meta
                 .modified()
@@ -331,6 +331,32 @@ fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
     fs::canonicalize(candidate)
         .map(|c| c == target)
         .unwrap_or(false)
+}
+
+/// Read `path`'s entire contents, refusing to follow symlinks even if
+/// the path was swapped between the earlier `symlink_metadata` check
+/// and this read (a TOCTOU window the bare `fs::read` would lose to).
+/// On unix we open with `O_NOFOLLOW` so the open itself fails with
+/// ELOOP if the path is now a symlink. On non-unix targets (Windows)
+/// we fall through to the plain read — Windows' symlink semantics are
+/// different, and the host pack pipeline doesn't have meaningful
+/// real-world unix-symlink exposure on those targets.
+fn read_no_follow(path: &Path) -> std::io::Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        let mut data = Vec::new();
+        f.read_to_end(&mut data)?;
+        Ok(data)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::read(path)
+    }
 }
 
 /// Return true if a mangled 8.3 name corresponds to a DOS/Windows
@@ -489,6 +515,31 @@ mod tests {
         let expanded = expand_inputs(std::slice::from_ref(&src), Some(&out_canonical)).unwrap();
         assert_eq!(expanded.len(), 1, "previous OUT.EXE must be skipped");
         assert!(expanded.contains(&real));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_no_follow_refuses_symlink() {
+        // Defends the no-follow boundary against a TOCTOU swap: the
+        // input list passed expand_inputs as a regular file, then by
+        // the time pack reaches read_no_follow it's a symlink. The
+        // read must fail rather than silently follow. open(2) with
+        // O_NOFOLLOW returns ELOOP (40 on Linux, 62 on macOS); the
+        // exact errno doesn't matter for this gate, only that the
+        // open errored instead of returning the symlink target's
+        // bytes.
+        let td = tempfile::tempdir().unwrap();
+        let real = make_input(td.path(), "real.txt", b"keep");
+        let link = td.path().join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = read_no_follow(&link).unwrap_err();
+        // raw_os_error() is Some for any errno from open(2); a None
+        // here would mean we never reached open which is itself a
+        // failure of the no-follow boundary.
+        assert!(
+            err.raw_os_error().is_some(),
+            "read_no_follow on a symlink should fail with a syscall-level errno; got: {err}"
+        );
     }
 
     #[test]

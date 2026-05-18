@@ -196,8 +196,8 @@ verify-gate tests PLAN.md §10 specifies.
       `host/tests/common/mod.rs`. Each `dosbox_*.rs` keeps its own
       `dosbox.conf` template and timeout inline (varies per test).
       Crosses the 6+ files threshold called out in the Phase 3 PR
-      review: 6 existing dosbox_*.rs + 1 benchmark + 2 new (2 MB,
-      timestamps) = 9 callers.
+      review: 6 existing dosbox_*.rs + 1 benchmark + 3 new (2 MB,
+      timestamps, stored-max-chunk) = 10 callers.
 - [x] `host/tests/dosbox_2mb_memsize2.rs` — `#[ignore]`-gated PLAN.md
       §10 Phase 4 Verify gate. 2 MiB compressible synthetic payload
       packed at each tier; DOSBox-X run with `memsize=2`,
@@ -216,12 +216,22 @@ verify-gate tests PLAN.md §10 specifies.
       mtime is set via `filetime::set_file_mtime` to a fixed value
       rather than wall-clock-now, so the test is stable across reruns
       and across CI host clocks.
+- [x] `host/tests/dosbox_stored_max_chunk.rs` — `#[ignore]`-gated
+      DOSBox-X gate. 200 KiB payload packed with `--algo stored
+      --chunk-size 65535 --target 8086`, run under `cputype=8086`.
+      Forces multiple iterations of the stub's `copy_bytes` loop per
+      chunk (chunk size 65535 > BUF_SIZE 16384). The aplib gates
+      exercise a different stub path (`g_src` + `aplib_depack` +
+      `g_buf`), so this is the only end-to-end coverage of the
+      stored multi-iteration `copy_bytes` branch.
 - [x] Host-side roundtrip tests in `host/tests/roundtrip.rs` for the
       new flag and walker:
       `pack_walks_directory_recursively`,
       `directory_pack_is_deterministic_across_two_invocations`,
       `chunk_size_flag_respected_end_to_end`,
-      `chunk_size_above_stub_budget_for_aplib_is_rejected`.
+      `chunk_size_above_stub_budget_for_aplib_is_rejected`,
+      `chunk_size_above_u16_for_stored_is_rejected`,
+      `stored_max_chunk_size_roundtrips_via_host_unpack`.
 - [x] CLI help (`host/src/main.rs::Cmd::Pack`) documents directories
       are walked recursively, files extract flat (no subdir recreation
       on DOS), and `--chunk-size` defaults to 16 KiB. The "directories
@@ -229,15 +239,15 @@ verify-gate tests PLAN.md §10 specifies.
 
 **Phase 4 verify**
 
-- [x] `cargo test --workspace` green (50 unit + 11 integration: 8
-      roundtrip + 3 aplib_roundtrip; ignored DOSBox-X gates remain
-      gated).
+- [x] `cargo test --workspace` green (50+ unit + 13 integration:
+      10 roundtrip + 3 aplib_roundtrip; ignored DOSBox-X gates
+      remain gated).
 - [x] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
       extracts byte-identical fixtures and payloads under
       `cputype=8086`, `cputype=386`, `cputype=pentium` across the
-      original six Phase 3 gates plus the two new Phase 4 gates
-      (2 MB memsize=2 + timestamps). All 10 ignored gates pass
-      locally under dosbox-x 2026.05.02 in ~3 min total. CI's
+      original six Phase 3 gates plus the three new Phase 4 gates
+      (2 MB memsize=2 + timestamps + stored-max-chunk). All 11
+      ignored gates pass locally under dosbox-x 2026.05.02. CI's
       `dosbox-x-integration` job runs the same set on Ubuntu 24.04.
 - [x] `cargo run -- pack out.exe some/dir/` walks the directory,
       packs every regular file under it in deterministically-sorted
@@ -252,9 +262,13 @@ verify-gate tests PLAN.md §10 specifies.
 - Default chunk size bump to 32 KiB. PLAN.md asks for it but the
   small-model DS budget (BSS ~35 KB at 16 KiB; ~52 KB at 32 KiB)
   doesn't have the headroom without either compact memory model or
-  DOS-heap allocation. Shipping `--chunk-size` lets users tune
-  upward when their stub-budget headroom allows; defaulting up is a
-  focused follow-up.
+  DOS-heap allocation. Today `--chunk-size` lets stored-mode users
+  pick a value up to u16::MAX (the default 16384 is below stored's
+  ceiling), and lets either algorithm pick a smaller chunk for
+  archive-layout tuning; aplib's ceiling IS the default, so an
+  aplib-default user can't tune upward without the stub changes
+  above. Defaulting up is a focused follow-up that requires the
+  memory-model / DOS-heap decision first.
 - Subdirectory recreation in the stub. PLAN.md §8 hints at it for
   directory mode, but Phase 4 Verify doesn't require it. Flat
   extraction is the simpler shipping choice and is documented in

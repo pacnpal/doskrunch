@@ -14,11 +14,19 @@
 //!     aplib branch, which goes through `g_src` / `aplib_depack` / `g_buf`
 //!     and a single write — not through `copy_bytes`.
 //!
-//! This gate packs a 200 KiB payload with `--algo stored --chunk-size 65535`
-//! at `--target 8086` and runs it under DOSBox-X with `cputype=8086`.
-//! The chunk count is 200_000 / 65535 ≈ 4 (3 × 65535 + 3395), and each of
-//! the three 65535-byte chunks forces multiple `copy_bytes` iterations.
+//! This gate packs a 200 KiB (204 800 B) payload with
+//! `--algo stored --chunk-size 65535` at `--target 8086` and runs it
+//! under DOSBox-X with `cputype=8086`. The chunk layout is
+//! 204_800 / 65535 = 4 chunks (3 × 65535 + 1 × 8195), and each of the
+//! three 65535-byte chunks forces multiple `copy_bytes` iterations.
 //! Byte-identical extraction proves the loop's chunk-handoff is correct.
+//!
+//! Source-file layout mirrors `dosbox_timestamps.rs`: the source
+//! `payload.bin` lives in a separate `srcdir` outside the DOSBox-X
+//! mount, so the case-insensitive lookup `locate_case_insensitive(
+//! rundir, "PAYLOAD.BIN")` can't accidentally match the original
+//! source on a case-insensitive filesystem and pass without
+//! verifying what the stub wrote.
 //!
 //! `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked;
 //! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
@@ -44,10 +52,14 @@ const DOSBOX_TIMEOUT: Duration = Duration::from_secs(180);
 fn extracts_stored_payload_with_max_chunk_size_under_8086() {
     let payload: Vec<u8> = (0..PAYLOAD_SIZE).map(|i| (i & 0xff) as u8).collect();
 
-    let work = tempfile::tempdir().expect("create tempdir");
-    let work_path = work.path();
+    let srcdir = tempfile::tempdir().expect("create srcdir");
+    let rundir = tempfile::tempdir().expect("create rundir");
+    let work_path = rundir.path();
 
-    let src = work_path.join("payload.bin");
+    // Source OUTSIDE the DOSBox-X mount so the case-insensitive
+    // lookup below can't match the original `payload.bin` instead of
+    // the extracted `PAYLOAD.BIN` on a case-insensitive filesystem.
+    let src = srcdir.path().join("payload.bin");
     fs::write(&src, &payload).expect("write source payload");
 
     let sfx_path = work_path.join("OUT.EXE");
@@ -101,9 +113,9 @@ fn extracts_stored_payload_with_max_chunk_size_under_8086() {
         .expect("spawn dosbox-x");
     let status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
         Ok(s) => s,
-        Err(WaitError::Timeout) => panic!(
-            "dosbox-x did not exit within {DOSBOX_TIMEOUT:?}; child was killed"
-        ),
+        Err(WaitError::Timeout) => {
+            panic!("dosbox-x did not exit within {DOSBOX_TIMEOUT:?}; child was killed")
+        }
         Err(WaitError::Wait(e)) => panic!("waiting on dosbox-x failed: {e}; child was killed"),
     };
     assert!(
