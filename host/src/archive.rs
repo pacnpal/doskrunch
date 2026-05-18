@@ -572,7 +572,8 @@ pub fn build_aplib_entry(
     } else {
         let mut out = Vec::with_capacity(data.len().div_ceil(APLIB_CHUNK_INPUT));
         for c in data.chunks(APLIB_CHUNK_INPUT) {
-            let compressed = crate::compress::aplib::compress(c);
+            let compressed = crate::compress::aplib::compress(c)
+                .map_err(ArchiveError::AplibCompress)?;
             if compressed.len() > u16::MAX as usize {
                 return Err(ArchiveError::AplibChunkOverflow {
                     uncompressed: c.len(),
@@ -660,6 +661,7 @@ pub enum ArchiveError {
         uncompressed: usize,
         compressed: usize,
     },
+    AplibCompress(String),
 }
 
 impl std::fmt::Display for ArchiveError {
@@ -698,6 +700,7 @@ impl std::fmt::Display for ArchiveError {
                 f,
                 "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, overflowing the u16 per-chunk size field"
             ),
+            Self::AplibCompress(msg) => write!(f, "{msg}"),
         }
     }
 }

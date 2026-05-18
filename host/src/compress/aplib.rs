@@ -47,14 +47,17 @@ extern "C" {
 /// Compress `data` with apultra (optimal aPLib). Output is a stock
 /// aPLib stream and can be decoded by any conforming aPLib decoder.
 ///
-/// Panics only on apultra returning an error sentinel, which the
-/// library documents as "out of memory" or "buffer too small" — both
-/// indicate a host-side bug, not bad input.
-pub fn compress(data: &[u8]) -> Vec<u8> {
+/// Returns `Err` on any apultra-reported failure — "out of memory" or
+/// "buffer too small" per the upstream contract. The host pipeline is
+/// unlikely to trip these on the chunk sizes we feed it
+/// (`APLIB_CHUNK_INPUT = 16 KiB`), but library consumers (the fuzz
+/// target, anyone calling `pack::pack` directly) can pass arbitrary
+/// data, so we surface the error instead of panicking.
+pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
     if data.is_empty() {
         // apultra rejects 0-byte inputs; the caller's empty-chunk path
         // shouldn't reach the codec, but be defensive.
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let max_out = unsafe { apultra_get_max_compressed_size(data.len()) };
     let mut buf = vec![0u8; max_out];
@@ -72,14 +75,14 @@ pub fn compress(data: &[u8]) -> Vec<u8> {
         )
     };
     if written == APULTRA_ERROR {
-        panic!(
-            "apultra_compress failed (input {} bytes, output buffer {} bytes)",
+        return Err(format!(
+            "aplib: apultra_compress failed (input {} bytes, output buffer {} bytes)",
             data.len(),
             buf.len()
-        );
+        ));
     }
     buf.truncate(written);
-    buf
+    Ok(buf)
 }
 
 /// Decompress an aPLib-formatted stream into a buffer of the exact
@@ -139,7 +142,7 @@ mod tests {
     #[test]
     fn roundtrip_short() {
         let input = b"hello world, hello world, hello world, hello world.";
-        let c = compress(input);
+        let c = compress(input).unwrap();
         assert!(!c.is_empty());
         let d = decompress(&c, input.len()).unwrap();
         assert_eq!(d.as_slice(), input.as_slice());
@@ -152,7 +155,7 @@ mod tests {
             input.extend_from_slice(&i.to_le_bytes());
             input.extend_from_slice(b"the quick brown fox jumps over the lazy dog\n");
         }
-        let c = compress(&input);
+        let c = compress(&input).unwrap();
         assert!(c.len() < input.len(), "compressed {} >= input {}", c.len(), input.len());
         let d = decompress(&c, input.len()).unwrap();
         assert_eq!(d, input);
@@ -161,7 +164,7 @@ mod tests {
     #[test]
     fn roundtrip_zero_padded() {
         let input = vec![0u8; 16384];
-        let c = compress(&input);
+        let c = compress(&input).unwrap();
         let d = decompress(&c, input.len()).unwrap();
         assert_eq!(d, input);
     }
@@ -173,7 +176,7 @@ mod tests {
             input.push_str("Lorem ipsum dolor sit amet, consectetur adipiscing elit. ");
         }
         let bytes = input.as_bytes();
-        let apl = compress(bytes);
+        let apl = compress(bytes).unwrap();
         let gz = gzip9(bytes);
         assert!(
             apl.len() < gz.len(),
@@ -186,7 +189,7 @@ mod tests {
     #[test]
     fn beats_gzip9_on_zeros() {
         let input = vec![0u8; 32768];
-        let apl = compress(&input);
+        let apl = compress(&input).unwrap();
         let gz = gzip9(&input);
         assert!(
             apl.len() < gz.len(),
@@ -220,7 +223,7 @@ mod tests {
         }
         // .bss-like padding.
         input.extend(std::iter::repeat_n(0u8, 2048));
-        let apl = compress(&input);
+        let apl = compress(&input).unwrap();
         let gz = gzip9(&input);
         assert!(
             apl.len() < gz.len(),
@@ -233,7 +236,7 @@ mod tests {
     #[test]
     fn decompress_rejects_size_mismatch() {
         let input = b"some data to compress to test mismatch handling..............";
-        let c = compress(input);
+        let c = compress(input).unwrap();
         // Tell decompress we expect one more byte than reality — it must error.
         let err = decompress(&c, input.len() + 1).unwrap_err();
         assert!(err.contains("aplib"));
