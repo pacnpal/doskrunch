@@ -287,6 +287,61 @@ fn chunk_size_above_stub_budget_for_aplib_is_rejected() {
 }
 
 #[test]
+fn deferred_algorithm_takes_precedence_over_chunk_size_validation() {
+    // The CLI's `Lzsa2 | Lzma => None` branch deliberately skips
+    // chunk-size validation so `--algo lzma --chunk-size 99999`
+    // surfaces the more useful "lzma lands in phase 5" message
+    // instead of a generic chunk-size error. Without this gate, a
+    // refactor of `max_chunk` could re-introduce the chunk-size
+    // error precedence regression silently.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.bin");
+    std::fs::write(&src, b"x").unwrap();
+    let exe = tmp.path().join("o.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "lzma",
+        "--target",
+        "8086",
+        "--chunk-size",
+        "99999",
+    ]);
+    let out = pack.output().unwrap();
+    assert!(!out.status.success(), "lzma should bail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("lzma") && stderr.contains("phase 5"),
+        "expected phase-5 lzma message, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("chunk-size") && !stderr.contains("chunk_size"),
+        "chunk-size validation should be deferred, got: {stderr}"
+    );
+
+    let mut pack = doskrunch();
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "lzsa2",
+        "--target",
+        "8086",
+        "--chunk-size",
+        "99999",
+    ]);
+    let out = pack.output().unwrap();
+    assert!(!out.status.success(), "lzsa2 should bail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("lzsa2") && stderr.contains("phase 6"),
+        "expected phase-6 lzsa2 message, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("chunk-size") && !stderr.contains("chunk_size"),
+        "chunk-size validation should be deferred, got: {stderr}"
+    );
+}
+
+#[test]
 fn chunk_size_above_u16_for_stored_is_rejected() {
     // Symmetric to the aplib-rejection case: stored allows up to
     // u16::MAX (65535), so 65536 must bail at the CLI boundary with

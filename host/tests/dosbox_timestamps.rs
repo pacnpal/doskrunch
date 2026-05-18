@@ -199,25 +199,38 @@ fn write_dosbox_conf(path: &std::path::Path, mount: &std::path::Path) {
 /// modulo whatever offset", and the test compares broken-down
 /// components after the same TZ pass.
 ///
-/// std::env::set_var is `unsafe` since Rust 1.78 due to potential
-/// races with concurrent libc env reads; the dosbox tests are
-/// single-threaded so a one-shot set+tzset is safe in practice.
+/// `std::env::set_var` is `unsafe` since Rust 1.78 — concurrent libc
+/// env reads in OTHER tests in the same binary can race with our
+/// mutation. `cargo test` runs tests in a binary in parallel by
+/// default; both timestamp tests call `pin_test_tz`, so we serialize
+/// them with `TZ_LOCK` to keep the env-mutation interval bounded by
+/// the test function's scope.
 /// `tzset()` isn't bound in the `libc` crate, so declare the extern
 /// inline — it's a POSIX function on every relevant target.
-fn pin_test_tz() {
+static TZ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn pin_test_tz() -> std::sync::MutexGuard<'static, ()> {
+    // Take the lock for the duration of the test. Dropping the
+    // guard at test exit doesn't unset TZ (no need — every
+    // timestamp-sensitive test in this file goes through
+    // pin_test_tz and gets the same value), it just lets the next
+    // serialized test proceed without overlapping our
+    // set_var/tzset window.
     extern "C" {
         fn tzset();
     }
+    let guard = TZ_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     unsafe {
         std::env::set_var("TZ", "America/New_York");
         tzset();
     }
+    guard
 }
 
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn preserves_pinned_source_mtime_through_dos_extraction() {
-    pin_test_tz();
+    let _tz_guard = pin_test_tz();
     // Two complementary checks:
     //   1. Pack-side: re-open the archive bytes with `inspect` and
     //      confirm the stored per-file timestamp equals
@@ -289,6 +302,16 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 
     let extracted =
         locate_case_insensitive(rundir_path, "STAMPED.TXT").expect("missing STAMPED.TXT");
+    // Byte-identity check: defends the timestamp gate against
+    // accepting a content regression that happens to preserve the
+    // mtime. Per the repo coding guideline "all dosbox_*.rs gates
+    // must assert byte-identical extraction".
+    let extracted_body = fs::read(&extracted).expect("read extracted");
+    let source_body = fs::read(&src).expect("read source");
+    assert_eq!(
+        extracted_body, source_body,
+        "extracted body differs from source — content regression masked by a correct mtime"
+    );
     let got_mtime = fs::metadata(&extracted)
         .expect("stat extracted")
         .modified()
@@ -315,7 +338,7 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn pre_1980_source_mtime_clamps_exactly_to_fat_epoch_endpoint() {
-    pin_test_tz();
+    let _tz_guard = pin_test_tz();
     // Source mtime: 1979-06-15 17:42:00 UTC — deliberately NOT
     // Jan 1 / midnight so we actually verify the clamp zeroes
     // month/day/time as well as the year. fat_time::unix_to_fat
@@ -370,6 +393,14 @@ fn pre_1980_source_mtime_clamps_exactly_to_fat_epoch_endpoint() {
     run_dosbox(rundir_path, &conf_path, "pre-1980-mtime");
 
     let extracted = locate_case_insensitive(rundir_path, "OLD.TXT").expect("missing OLD.TXT");
+    // Byte-identity check (see the pinned-mtime test above for the
+    // rationale).
+    let extracted_body = fs::read(&extracted).expect("read extracted");
+    let source_body = fs::read(&src).expect("read source");
+    assert_eq!(
+        extracted_body, source_body,
+        "extracted body differs from source — content regression masked by a correct mtime"
+    );
     let got_mtime = fs::metadata(&extracted)
         .expect("stat extracted")
         .modified()

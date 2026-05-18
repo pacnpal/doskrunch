@@ -100,6 +100,22 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // purpose is intended. The output path is excluded so re-running
     // `doskrunch pack dir/OUT.EXE dir/` doesn't pack the previous SFX
     // into the new SFX (which would also break rerun determinism).
+    // Refuse a symlinked output path. `write_sfx` later calls
+    // `File::create(opts.output)` which follows symlinks, so a
+    // symlinked output would have us overwriting the link's target
+    // — possibly outside the input tree. Combined with the
+    // input-side no-follow rules, this keeps the "symlinks not
+    // followed" contract honest on the output side too. Only check
+    // if the output already exists; first-pack runs naturally have
+    // a not-yet-created output.
+    if let Ok(meta) = fs::symlink_metadata(&opts.output) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "{}: output path is a symlink; refusing to overwrite the target",
+                opts.output.display()
+            );
+        }
+    }
     let exclude = canonicalize_for_exclude(&opts.output)?;
     // Windows: warn loudly if the output already exists. The
     // canonical-path fallback in `matches_exclude` won't catch NTFS
@@ -629,6 +645,31 @@ mod tests {
             err.raw_os_error().is_some(),
             "read_no_follow on a symlink should fail with a syscall-level errno; got: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_bails_when_output_is_a_symlink() {
+        // `File::create(output)` follows symlinks, so allowing a
+        // symlinked output would have us overwriting the link's
+        // target — possibly outside the input tree. Bail at pack()
+        // entry; tested here by invoking the public pack() API.
+        let td = tempfile::tempdir().unwrap();
+        let real = td.path().join("real.bin");
+        fs::write(&real, b"target").unwrap();
+        let link = td.path().join("OUT.EXE");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let input = make_input(td.path(), "a.txt", b"x");
+        let mut opts = default_opts(td.path(), vec![input], Algorithm::Stored);
+        opts.output = link;
+        let err = pack(opts).unwrap_err();
+        assert!(
+            err.to_string().contains("output path is a symlink"),
+            "got: {err}"
+        );
+        // Confirm the symlink target wasn't touched.
+        let body = fs::read(&real).unwrap();
+        assert_eq!(body, b"target");
     }
 
     #[cfg(unix)]
