@@ -41,15 +41,20 @@ static u8  g_src[APLIB_SRC_SIZE];
 
 /* Decompress an aPLib stream pointed to by `src` into `dst`. Returns the
  * decompressed byte count. Implemented in stubs/src/aplib_depack_16.asm
- * (ported from apultra's asm/8088/aplib_8088_small.S). Watcom small-model
- * register-based calling: first arg in SI, second in DI, return in AX. */
+ * (ported from apultra's asm/8088/aplib_8088_small.S).
+ *
+ * Watcom small-model register-based calling: first arg in SI, second in
+ * DI, return in AX. The `"*"` name override suppresses Watcom's default
+ * trailing-underscore mangling so the symbol matches the NASM-emitted
+ * `aplib_depack` (no underscore). Without it, wlink errors with
+ * `undefined symbol aplib_depack_`.
+ *
+ * `modify` explicitly includes SI and DI: the depacker uses them as
+ * iterators and trashes them on exit. Under Watcom's register-based
+ * calling convention input registers are caller-saved, so this is
+ * documentation parity with the asm header's `Trashes:` line. */
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
-/* The depacker uses SI/DI as iterators and also trashes BX/CX/DX/BP.
- * Listing SI/DI explicitly in `modify` keeps the contract here in
- * lockstep with the asm header's `Trashes:` line (input registers are
- * caller-saved under Watcom's register-based calling convention, so
- * this is documentation rather than a code-gen change). */
-#pragma aux aplib_depack parm [si] [di] value [ax] modify [ax bx cx dx si di bp];
+#pragma aux aplib_depack "*" parm [si] [di] value [ax] modify [ax bx cx dx si di bp];
 
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
