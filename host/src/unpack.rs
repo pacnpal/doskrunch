@@ -196,17 +196,10 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
 }
 
 fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
-    if !matches!(algo, Algorithm::Stored) {
-        bail!(
-            "algorithm '{}' decode not yet supported on host (phase {} territory)",
-            algo.name(),
-            match algo {
-                Algorithm::Aplib => "2",
-                Algorithm::Lzsa2 => "6",
-                Algorithm::Lzma => "5",
-                Algorithm::Stored => "?",
-            }
-        );
+    match algo {
+        Algorithm::Stored | Algorithm::Aplib => {}
+        Algorithm::Lzsa2 => bail!("aplib host-decode lands in phase 6 for lzsa2"),
+        Algorithm::Lzma => bail!("lzma host-decode lands in phase 5"),
     }
     // Phase 1 hard cap on per-file uncompressed size. The current unpack
     // path builds the whole file in memory; streaming lands in Phase 4
@@ -226,15 +219,39 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
     }
     let mut data = Vec::with_capacity(total as usize);
     for c in &entry.chunks {
-        if c.data.len() != c.uncompressed_size as usize {
-            bail!(
-                "{}: stored chunk size mismatch ({} vs declared {})",
-                entry.display_name(),
-                c.data.len(),
-                c.uncompressed_size
-            );
+        match algo {
+            Algorithm::Stored => {
+                if c.data.len() != c.uncompressed_size as usize {
+                    bail!(
+                        "{}: stored chunk size mismatch ({} vs declared {})",
+                        entry.display_name(),
+                        c.data.len(),
+                        c.uncompressed_size
+                    );
+                }
+                data.extend_from_slice(&c.data);
+            }
+            Algorithm::Aplib => {
+                if c.uncompressed_size == 0 {
+                    // Empty file produces a single zero-length chunk; nothing to decode.
+                    if !c.data.is_empty() {
+                        bail!(
+                            "{}: aplib chunk declares 0 uncompressed bytes but carries {} compressed",
+                            entry.display_name(),
+                            c.data.len()
+                        );
+                    }
+                    continue;
+                }
+                let decoded = crate::compress::aplib::decompress(
+                    &c.data,
+                    c.uncompressed_size as usize,
+                )
+                .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
+                data.extend_from_slice(&decoded);
+            }
+            _ => unreachable!("rejected above"),
         }
-        data.extend_from_slice(&c.data);
     }
     let crc = crc32fast::hash(&data);
     if crc != entry.crc32 {

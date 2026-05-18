@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::archive::{build_stored_entry, flags, Algorithm, Archive, TargetTier};
+use crate::archive::{build_aplib_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier};
 use crate::fat_time::unix_to_fat;
 use crate::name83::{dedupe, mangle};
 use crate::stubs::stub_for;
@@ -24,11 +24,10 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     {
         bail!("LZMA requires 386 or later; pick --target 386 or higher.");
     }
-    if !matches!(opts.algorithm, Algorithm::Stored) {
-        bail!(
-            "algorithm '{}' not yet supported in this phase; only 'stored' is available",
-            opts.algorithm.name()
-        );
+    match opts.algorithm {
+        Algorithm::Stored | Algorithm::Aplib => {}
+        Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
+        Algorithm::Lzma => bail!("algorithm 'lzma' lands in phase 5"),
     }
 
     let stub = stub_for(opts.algorithm, opts.target)
@@ -151,8 +150,13 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         if data.len() > u32::MAX as usize {
             bail!("{}: file exceeds 4 GiB", src.display());
         }
-        let entry = build_stored_entry(&stored_name, 0x20, timestamp, &data)
-            .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
+        let entry = match opts.algorithm {
+            Algorithm::Stored => build_stored_entry(&stored_name, 0x20, timestamp, &data),
+            Algorithm::Aplib => build_aplib_entry(&stored_name, 0x20, timestamp, &data),
+            // Lzsa2/Lzma rejected earlier; unreachable here.
+            other => bail!("internal: unexpected algorithm {}", other.name()),
+        }
+        .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
         archive.files.push(entry);
     }
 

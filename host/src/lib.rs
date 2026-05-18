@@ -9,6 +9,7 @@
 //! phases.
 
 pub mod archive;
+pub mod compress;
 pub mod fat_time;
 pub mod inspect;
 pub mod name83;

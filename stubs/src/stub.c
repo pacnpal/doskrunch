@@ -1,14 +1,24 @@
-/* stub.c — Phase 1 doskrunch SFX stub: 8086 / stored algorithm.
+/* stub.c — doskrunch SFX stub: 8086 / stored + aplib algorithms.
  *
  * Locates itself on disk (argv[0]), reads the DKTR trailer at EOF-8,
  * seeks to the DKCH archive header, walks per-file records, and writes
- * each file's stored chunks to disk via Watcom's INT 21h wrappers.
+ * each file's chunks to disk via Watcom's INT 21h wrappers.
  *
- * Memory model: small (DS=SS, code+data ≤64KB). g_buf is a 16KB scratch
- * buffer in the data segment. Payload size is not bounded by RAM — we
- * copy through the buffer chunk by chunk via DOS file handles.
+ * Two algorithms are dispatched at runtime on the archive's algorithm
+ * byte (DKCH header offset 5):
+ *   0 — stored: chunks are copied through g_buf, csize == usize.
+ *   1 — aplib:  each chunk is read into g_src, decompressed via
+ *               aplib_depack into g_dst, then written out. Per-chunk
+ *               uncompressed size is bounded by the host (archive.rs
+ *               APLIB_CHUNK_INPUT = 16 KiB) so the worst-case compressed
+ *               buffer fits in small-model DS alongside g_dst.
  *
- * Build: Open Watcom v2, real-mode DOS, -0 -ms -os.
+ * Memory model: small (DS=SS, code+data ≤64KB). Scratch buffers live in
+ * the data segment but not in the on-disk image (BSS). Payload size is
+ * not bounded by RAM; we stream through buffers chunk by chunk.
+ *
+ * Build: Open Watcom v2 + NASM, real-mode DOS, -0 -ms -os, linked with
+ * stubs/src/aplib_depack_16.asm.
  */
 
 #include <dos.h>
@@ -22,9 +32,19 @@ typedef unsigned short u16;
 typedef unsigned long  u32;
 
 #define BUF_SIZE 16384u
+/* Worst-case aPLib expansion on BUF_SIZE bytes: n + n/8 + 16 = 18448. */
+#define APLIB_SRC_SIZE 18464u
 #define TRAILER_SIZE 8u
 
 static u8  g_buf[BUF_SIZE];
+static u8  g_src[APLIB_SRC_SIZE];
+
+/* Decompress an aPLib stream pointed to by `src` into `dst`. Returns the
+ * decompressed byte count. Implemented in stubs/src/aplib_depack_16.asm
+ * (ported from apultra's asm/8088/aplib_8088_small.S). Watcom small-model
+ * register-based calling: first arg in SI, second in DI, return in AX. */
+extern unsigned int aplib_depack(const u8 *src, u8 *dst);
+#pragma aux aplib_depack parm [si] [di] value [ax] modify [ax bx cx dx bp];
 
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
@@ -167,6 +187,7 @@ int main(int argc, char **argv)
     long self_size;
     u16 file_count;
     u16 i;
+    u8 algo;
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
     u8 hcrc[4];
@@ -199,7 +220,8 @@ int main(int argc, char **argv)
      * about and the host writes correct CRCs. */
 
     if (hdr[4] != 1)  die("bad version");
-    if (hdr[5] != 0)  die("algo not stored");
+    algo = hdr[5];
+    if (algo > 1) die("bad algo");
     file_count = rd_u16(hdr + 9);
 
     for (i = 0; i < file_count; i++) {
@@ -261,12 +283,29 @@ int main(int argc, char **argv)
         for (ci = 0; ci < chunk_count; ci++) {
             u16 csize;
             u16 usize;
+            unsigned wrote;
+            unsigned produced;
             if (read_exact(self, ch_b, 4) != 0) die("read chunk header");
             csize = rd_u16(ch_b);
             usize = rd_u16(ch_b + 2);
-            if (csize != usize) die("stored size mismatch");
-            if (csize == 0) continue;
-            if (copy_bytes(self, out, (u32)csize) != 0) die("copy");
+            if (csize == 0) {
+                if (usize != 0) die("aplib zero csize");
+                continue;
+            }
+            if (algo == 0) {
+                if (csize != usize) die("stored size mismatch");
+                if (copy_bytes(self, out, (u32)csize) != 0) die("copy");
+            } else {
+                /* aplib: read whole compressed chunk, depack, write out. */
+                if (csize > APLIB_SRC_SIZE) die("aplib csize");
+                if (usize > BUF_SIZE)       die("aplib usize");
+                if (read_exact(self, g_src, csize) != 0) die("read aplib");
+                produced = aplib_depack(g_src, g_buf);
+                if (produced != usize) die("aplib size");
+                if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
+                    die("write aplib");
+                }
+            }
         }
 
         if (read_exact(self, filecrc, 4) != 0) die("read filecrc");

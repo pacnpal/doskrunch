@@ -33,7 +33,43 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 
 ## Phase 2: aPLib (8086)
 
-Not started.
+- [x] Vendor `vendor/apultra` via `git subtree` (zlib license; output
+      fully compatible with original Joergen Ibsen aPLib format).
+- [x] Compile apultra C sources (compressor + decompressor) into a
+      static lib via `cc-rs` from `host/build.rs`.
+- [x] Rust binding `host/src/compress/aplib.rs` over
+      `apultra_compress` / `apultra_decompress`.
+- [x] `build_aplib_entry` in `host/src/archive.rs` — 16 KiB
+      uncompressed chunk cap so worst-case expansion fits in u16.
+- [x] Algorithm dispatch in `host/src/pack.rs` and `host/src/unpack.rs`.
+- [x] 16-bit NASM depacker `stubs/src/aplib_depack_16.asm`, ported
+      from `vendor/apultra/asm/8088/aplib_8088_small.S`.
+- [x] Runtime dispatch in `stubs/src/stub.c` on the archive's
+      algorithm byte (0=stored streaming, 1=aplib via depacker).
+- [x] `stubs/Dockerfile` installs `nasm`.
+- [x] `stubs/Makefile` produces `stubs/blobs/aplib_8086.bin` (≤8 KB
+      hard ceiling).
+- [x] Flip `--algo` default from `stored` to `aplib` in
+      `host/src/main.rs`.
+- [x] New tests: aplib roundtrip unit tests in `archive::tests`,
+      aplib compressor unit tests in `compress::aplib::tests` (incl.
+      beats-gzip-9 assertions), `host/tests/aplib_roundtrip.rs`
+      host-side end-to-end.
+- [x] `host/tests/dosbox_aplib_8086.rs` — `#[ignore]`-gated DOSBox-X
+      integration test parallel to `dosbox_8086.rs`.
+- [ ] Commit the rebuilt `stubs/blobs/aplib_8086.bin` (produced by
+      CI's `build-stubs.yml` after the first push).
+
+**Phase 2 verify**
+
+- [x] `cargo test --workspace` green (43 unit + 7 integration + 1
+      ignored stored DOSBox + 1 ignored aplib DOSBox).
+- [x] `cargo run -- pack o.exe tests/fixtures/*` with no flags
+      produces a strictly smaller `.EXE` than the same call with
+      `--algo stored`.
+- [ ] DOSBox-X headless extraction with `--algo aplib` byte-identical
+      against fixtures (`cpu_type=8086`, `memsize=4`). Pending the
+      Watcom-built aplib blob landing.
 
 ## Phase 3: 386 + pentium tiers
 
