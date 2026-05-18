@@ -68,15 +68,25 @@
         global  aplib_depack
 
 %macro apl_get_bit_inline 0
-        add     al, al                  ; shift bit queue, top bit -> CF
-        jnz     %%gotbit                ; queue not yet empty
-        a32 lodsb                       ; refill from DS:[ESI++]
-        adc     al, al                  ; shift in the freshly-loaded byte's
-                                        ; top bit (the CF set by the lodsb
-                                        ; address-prefix is irrelevant; adc
-                                        ; reads CF, which was set by the
-                                        ; preceding add al,al that brought
-                                        ; us here — and that produced 0)
+        ; Bit-queue invariant (matches the 8086 port and apultra's x86
+        ; size-opt variant): AL holds 7 unread data bits in the high
+        ; bits and a 1-sentinel somewhere below. Each `add al, al` shifts
+        ; the next data bit into CF and the sentinel toward MSB.
+        ;
+        ; Falling through to the refill path means `add al, al` produced
+        ; AL == 0 (so jnz didn't fire) — which happens exactly when the
+        ; sentinel was the only 1 still in AL and just shifted out. That
+        ; sentinel sits in CF now (CF=1). LODSB doesn't touch flags, so
+        ; CF survives the load; the trailing `adc al, al` then computes
+        ;   AL = (AL << 1) + CF  (= (next_byte << 1) | 1)
+        ; which delivers the new bit in CF (from `next_byte`'s MSB) and
+        ; restores the 1-sentinel into AL bit 0.
+        add     al, al                  ; data bit -> CF; AL shifts left
+        jnz     %%gotbit                ; AL nonzero -> queue still has bits
+        a32 lodsb                       ; AL == 0: refill from DS:[ESI++].
+                                        ; Flags preserved -> CF=1 (sentinel)
+        adc     al, al                  ; CF (data bit) -> CF, old CF=1
+                                        ; becomes the new sentinel in bit 0
 %%gotbit:
 %endmacro
 

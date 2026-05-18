@@ -26,11 +26,6 @@ use std::time::{Duration, Instant};
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(300);
 const PAYLOAD_SIZE: usize = 500 * 1024;
 
-fn repo_root() -> PathBuf {
-    let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    host.parent().expect("host has a parent").to_path_buf()
-}
-
 /// Deterministic mixed-content payload — same distribution as
 /// `benchmark_tiers::synthesize_payload`. Kept inline here so this
 /// correctness gate doesn't depend on the benchmark harness; per the
@@ -75,7 +70,6 @@ fn synthesize_payload() -> Vec<u8> {
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn extracts_500kib_multichunk_payload_across_tiers() {
-    let root = repo_root();
     let payload = synthesize_payload();
     assert_eq!(payload.len(), PAYLOAD_SIZE);
 
@@ -84,7 +78,6 @@ fn extracts_500kib_multichunk_payload_across_tiers() {
     fs::write(&payload_path, &payload).expect("write payload");
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
-    let _ = root;
 
     for (tier, cputype) in &[("8086", "8086"), ("386", "386"), ("pentium", "pentium")] {
         let rundir = tempfile::tempdir().expect("rundir");
