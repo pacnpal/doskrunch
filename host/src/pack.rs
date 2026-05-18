@@ -19,15 +19,12 @@ pub struct PackOptions {
 }
 
 pub fn pack(opts: PackOptions) -> Result<()> {
-    if matches!(opts.algorithm, Algorithm::Lzma)
-        && matches!(opts.target, TargetTier::I8086 | TargetTier::I286)
-    {
-        bail!("LZMA requires 386 or later; pick --target 386 or higher.");
-    }
     match opts.algorithm {
         Algorithm::Stored | Algorithm::Aplib => {}
         Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
-        Algorithm::Lzma => bail!("algorithm 'lzma' lands in phase 5"),
+        Algorithm::Lzma => bail!(
+            "algorithm 'lzma' lands in phase 5 (and will require --target 386+ when enabled)"
+        ),
     }
 
     let stub = stub_for(opts.algorithm, opts.target)
@@ -237,7 +234,8 @@ mod tests {
             preserve_timestamps: false,
         };
         let err = pack(opts).unwrap_err();
-        assert!(err.to_string().contains("LZMA requires 386"));
+        assert!(err.to_string().contains("lzma"));
+        assert!(err.to_string().contains("phase 5"));
     }
 
     #[test]

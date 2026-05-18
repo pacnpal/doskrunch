@@ -72,6 +72,13 @@
 
 aplib_depack:
         push    es                      ; preserve caller's es
+        push    bp                      ; preserve caller's bp — Watcom's
+                                        ; small-model `-os` keeps a frame
+                                        ; pointer in BP and reads locals as
+                                        ; `[bp-N]`, so even if the C-side
+                                        ; pragma lists `bp` in `modify` the
+                                        ; surrounding function still relies
+                                        ; on BP after we return.
         push    ds
         pop     es                      ; es = ds (small-model data segment)
 
@@ -179,6 +186,7 @@ apl_done:
         pop     ax                      ; original di
         xchg    di,ax
         sub     ax,di                   ; decompressed size in ax
+        pop     bp                      ; restore caller's bp
         pop     es                      ; restore caller's es
         ret
 
