@@ -65,7 +65,7 @@ Build fails if a blob exceeds the hard ceiling.
 3. **LZMA** optional, best ratio, **386+ only**. Host rejects `--algo lzma --target 8086|286`.
 4. **stored** always available, no compression. Phase 1 baseline.
 
-Default invocation today (Phase 2): `doskrunch pack out.exe files...` → `--algo aplib --target 8086`. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob.
+Default invocation today (Phase 3): `doskrunch pack out.exe files...` → `--algo aplib --target 8086`. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob. Phase 3 also ships `--target 386` (wcc -3 + 32-bit-register aPLib depacker from `aplib_depack_32.asm`) and `--target pentium` (wcc -5 + speed-optimized fast-variant depacker from `aplib_depack_p5.asm`); both blobs dispatch on the archive's algorithm byte the same way the 8086 blob does.
 
 ## Reproducible builds
 
@@ -73,7 +73,24 @@ On by default: timestamps zeroed, file entries sorted lexicographically by store
 
 ## DOSBox-X integration tests
 
-Planned for Phase 1 completion (not yet wired up): headless DOSBox-X with `cpu_type=` pinned per tier (`8086`, `386`, `pentium_mmx`) and a fixed `memsize`, run from CI. Once added under `tests/integration/`, run them locally with `cargo test --test integration -- --ignored` when DOSBox-X is installed.
+Headless DOSBox-X gates live in `host/tests/dosbox_*.rs`, each `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked. Run them locally with:
+
+```bash
+SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored
+```
+
+Phase 3 ships six DOSBox-X correctness gates:
+
+- `dosbox_8086` — Phase 1 default-algo smoke test. Packs the small fixture set with no `--algo` flag, so it exercises whichever algorithm the host currently defaults to (Phase 2+ → `aplib`). Runs under `cputype=8086`.
+- `dosbox_aplib_8086`, `dosbox_aplib_386`, `dosbox_aplib_pentium` — explicit `--algo aplib` packs of the small fixture set at the matching `--target`, run under the matching `cputype=`. Each fixture fits in a single 16 KiB aPLib chunk.
+- `dosbox_aplib_large` — packs a 500 KiB synthetic mixed-content payload with `--algo aplib` at each of the three tiers and runs the SFX under the matching `cputype=`. At 500 KiB the payload spans ~32 chunks per file, so this gate exercises the stub's per-chunk decode loop end-to-end on a real-mode CPU emulation.
+- `dosbox_stored_all_tiers` — explicit `--algo stored` packs at each of the three tiers under the matching `cputype=`. The stub's stored branch (`algo == 0`, streaming `copy_bytes` through `g_buf`) is a different runtime path from the aplib branch; this gate verifies it works under Watcom's `-3` / `-5` C codegen for the new tiers.
+
+Each gate asserts byte-identical extraction. The 500 KiB tier benchmark (`benchmark_tiers`) is also `#[ignore]`-gated but additionally requires the `DOSKRUNCH_RUN_BENCHMARK=1` env var (so the CI `--ignored` run doesn't silently rewrite the committed `tests/benchmarks/results.md`); run it locally with:
+
+```bash
+DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture
+```
 
 ## Phase status
 

@@ -118,10 +118,10 @@ fn main() -> Result<()> {
         Cmd::Inspect { input } => inspect::inspect(inspect::InspectOptions { input }),
         Cmd::ListTargets => {
             println!("8086         shipped (default)");
-            println!("286          planned");
-            println!("386          planned (phase 3)");
+            println!("286          planned (phase 5)");
+            println!("386          shipped (perf gate pending; see tests/benchmarks/results.md)");
             println!("486          planned (phase 5)");
-            println!("pentium      planned (phase 3)");
+            println!("pentium      shipped (perf gate pending; see tests/benchmarks/results.md)");
             println!("pentium-mmx  planned (phase 5)");
             println!("p2           planned (phase 5)");
             println!("p3           planned (phase 5)");

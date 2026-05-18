@@ -73,7 +73,89 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 
 ## Phase 3: 386 + pentium tiers
 
-Not started.
+- [x] Port apultra's `asm/x86/aplib_x86_small.asm` to
+      `stubs/src/aplib_depack_32.asm` (bits 16, cpu 386, Watcom small-
+      model regparm ABI). Replaces the upstream `call .init_get_bit /
+      pop ebp` size trick (broken under 16-bit push width) and
+      `push 3 / pop ebx` with the explicit `mov bp,…` /
+      `mov ebx, 3` patterns from the 8086 port.
+- [x] Port apultra's `asm/x86/aplib_x86_fast.asm` to
+      `stubs/src/aplib_depack_p5.asm` (bits 16, cpu pentium, macro-
+      inlined `apl_get_bit`). No manual U/V pipe scheduling in this
+      revision — Karpathy: measure before scheduling.
+- [x] Single-source `stubs/src/stub.c` — all three depacker `.obj`
+      files export the same `aplib_depack` symbol with the same C
+      ABI, so the Makefile picks the `.obj` per tier without a
+      `-DALGO_DEPACK_*` toggle.
+- [x] `stubs/Makefile` builds three blobs: `aplib_8086.bin` (wcc -0
+      + aplib_depack_16.asm, hard ceiling 8 KB), `aplib_386.bin`
+      (wcc -3 + aplib_depack_32.asm, hard ceiling 10 KB),
+      `aplib_pentium.bin` (wcc -5 + aplib_depack_p5.asm, hard
+      ceiling 12 KB).
+- [x] Three blobs committed under `stubs/blobs/`. Sizes:
+      8086 = 6400 B, 386 = 6416 B, pentium = 6464 B — all well
+      under their hard ceilings. The 8086 blob is byte-identical
+      to the Phase 2 committed copy when rebuilt from the same
+      Watcom snapshot (reproducibility preserved).
+- [x] `host/src/stubs.rs` embeds the two new blobs via
+      `include_bytes!` and routes `(Stored|Aplib, I386|Pentium)` →
+      the matching blob.
+- [x] `host/src/main.rs::list-targets` flips 386 and pentium from
+      "planned (phase 3)" to "shipped".
+- [x] `host/tests/dosbox_aplib_386.rs` and
+      `host/tests/dosbox_aplib_pentium.rs` — `#[ignore]`-gated
+      DOSBox-X integration tests parallel to the 8086 version.
+- [x] `host/tests/dosbox_aplib_large.rs` — multi-chunk DOSBox-X
+      correctness gate: 500 KiB synthetic payload extracted
+      byte-identical at every tier under the matching `cputype=`.
+- [x] `host/tests/dosbox_stored_all_tiers.rs` — `--algo stored`
+      DOSBox-X coverage at each shipped tier. Closes the gap where
+      the stub's stored runtime branch (`algo == 0`, no depacker)
+      had no DOSBox-X coverage on the new wcc -3 / -5 builds; the
+      original Phase 1 `dosbox_8086.rs` smoke test stopped
+      covering stored after Phase 2 flipped the host's `--algo`
+      default to aplib.
+- [x] `tests/benchmarks/results.md` populated by
+      `host/tests/benchmark_tiers.rs` (also `#[ignore]`-gated).
+
+**Phase 3 verify**
+
+- [x] `cargo test --workspace` green (45 unit + 7 integration + 4
+      ignored DOSBox-X gates + 1 ignored benchmark gate).
+- [x] `SDL_VIDEODRIVER=dummy cargo test -- --ignored` extracts
+      byte-identical fixtures under `cputype=8086`, `cputype=386`,
+      and `cputype=pentium` (six DOSBox-X gates pass locally:
+      `dosbox_8086`, `dosbox_aplib_{8086,386,pentium}`,
+      `dosbox_aplib_large`, `dosbox_stored_all_tiers`).
+- [x] Stub blob sizes within hard ceilings for every tier.
+- [ ] PLAN.md §10 Phase 3 Verify: "386 is 2-4x faster than 8086,
+      pentium is 5-10x faster" speedup gate. **Not met.**
+      `tests/benchmarks/results.md` currently shows 1.00× / 1.00× /
+      1.10× under DOSBox-X with `cycles=auto`. What we have data
+      for: correctness. The six DOSBox-X correctness gates
+      (`dosbox_8086`, `dosbox_aplib_8086`, `dosbox_aplib_386`,
+      `dosbox_aplib_pentium`, the multi-chunk `dosbox_aplib_large`,
+      and the per-tier `dosbox_stored_all_tiers`) all extract
+      byte-identical at every tier, so we know both algorithm
+      paths produce correct output on every shipped tier. Where
+      the speedup went is currently a hypothesis, not a
+      measurement: DOSBox-X auto-cycles likely tunes per-cputype
+      throughput in a way that flattens relative-CPU comparison,
+      and DOS startup + INT 21h file I/O likely dominate the 2 s
+      wall-clock. The harness measures end-to-end SFX runtime, not
+      isolated depacker time, so we can't currently rule out a
+      genuinely slow port. Confirming or refuting that needs
+      isolated depacker timing (stub-side INT 1Ah cycle counter
+      around the `aplib_depack` call) and/or real-iron
+      measurement (86Box / a real 386 or Pentium box). Phase 3
+      ships the ports and the correctness gates; this perf-gate
+      row is left explicitly unchecked so the user can direct
+      (accept the limitation as-is, instrument the stub, gather
+      real-iron data, or block Phase 4 until one of those lands).
+      The decision to flag rather than re-tune the asm follows
+      CLAUDE.md's Karpathy guideline ("push back on speculative
+      work") and the working brief, not a literal directive in
+      PLAN.md.
 
 ## Phase 4: chunked extraction, large payloads
 
