@@ -235,6 +235,36 @@ pub fn pack(opts: PackOptions) -> Result<()> {
 /// walk — used to skip the pack's own output file when it sits inside
 /// a walked directory.
 ///
+/// Threat model and residual TOCTOU windows
+/// ----------------------------------------
+/// `doskrunch pack` is positioned as a developer tool packing the
+/// user's OWN files for distribution as a DOS SFX; the threat model
+/// does NOT include a concurrent attacker with the ability to swap
+/// entries in the input tree between syscalls. The "symlinks not
+/// followed" contract is therefore a USABILITY guarantee (we won't
+/// accidentally include files outside the named tree under normal
+/// operation), not a security guarantee. Three windows remain:
+///
+///   1. Top-level / walk-time symlink swap before `read_no_follow`
+///      opens the file: closed by the `read_no_follow` unix
+///      `O_NOFOLLOW` open.
+///   2. Directory swap to a symlink between the per-entry symlink
+///      check and the recursive `fs::read_dir` call: `read_dir`
+///      follows symlinks on the FINAL path component, so a
+///      concurrent attacker could redirect a subtree. Closing this
+///      requires `openat(O_DIRECTORY | O_NOFOLLOW)` + `fdopendir`
+///      walking, which is a substantial rewrite (or a dep on
+///      `cap-std`). Not done in Phase 4.
+///   3. Parent-component swap: even `O_NOFOLLOW` on a final-path
+///      open doesn't validate the parent chain. Closing this
+///      requires component-by-component `openat` from a known-safe
+///      root FD. Not done in Phase 4.
+///
+/// These TOCTOU windows are real under concurrent modification but
+/// don't affect single-user local pack runs, which is the workflow
+/// this tool targets. If a security-sensitive workflow comes up,
+/// switching to cap-std for the walk would be the right move.
+///
 /// Walk order: each `read_dir` result is sorted by path before recursion
 /// so the final list is identical across hosts (HFS+/ext4/NTFS all
 /// return directory entries in arbitrary order). The pack pipeline then
@@ -328,6 +358,30 @@ fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
     let Some(target) = exclude else {
         return false;
     };
+    // Hard-link detection on unix via (dev, ino). Catches the case
+    // where a walked input is a different PATH pointing at the same
+    // INODE as the output file — without this check, pack would
+    // include the input's bytes, then `File::create(output)` would
+    // truncate that same underlying inode and corrupt the input the
+    // user asked to pack. Canonical-path comparison alone wouldn't
+    // catch a hard link because hard links have distinct canonical
+    // paths.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(c), Ok(t)) = (
+            fs::symlink_metadata(candidate),
+            fs::symlink_metadata(target),
+        ) {
+            if c.dev() == t.dev() && c.ino() == t.ino() {
+                return true;
+            }
+        }
+    }
+    // Fallback: canonical-path equality. Catches symlinks-to-output
+    // and is the only check on non-unix targets (Windows file-ID
+    // comparison would need GetFileInformationByHandle via FFI; the
+    // path-equality fallback is sufficient for the common case).
     fs::canonicalize(candidate)
         .map(|c| c == target)
         .unwrap_or(false)
@@ -541,6 +595,23 @@ mod tests {
             err.raw_os_error().is_some(),
             "read_no_follow on a symlink should fail with a syscall-level errno; got: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_bails_when_input_is_hard_link_to_output() {
+        // Hard link → distinct path, same inode. Canonical-path
+        // comparison alone would miss this; the (dev, ino) check
+        // catches it so File::create on the output can't truncate
+        // the input file the user asked to pack.
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("OUT.EXE");
+        fs::write(&out, b"\x4d\x5afakeexe").unwrap();
+        let hl = td.path().join("hard.bin");
+        std::fs::hard_link(&out, &hl).unwrap();
+        let out_canonical = fs::canonicalize(&out).unwrap();
+        let err = expand_inputs(std::slice::from_ref(&hl), Some(&out_canonical)).unwrap_err();
+        assert!(err.to_string().contains("output into itself"), "got: {err}");
     }
 
     #[test]

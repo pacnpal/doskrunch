@@ -86,9 +86,13 @@ struct LocalParts {
 /// via libc's reentrant localtime_r. Returns None if libc rejects
 /// the value (overflow on time_t platforms with 32-bit time_t).
 fn local_parts(unix_secs: i64) -> Option<LocalParts> {
-    // libc::time_t is i64 on every unix target Rust supports in 2026
-    // (32-bit time_t platforms are extinct from the std targets list);
-    // a plain cast is safe and avoids clippy's useless_conversion lint.
+    // `libc::time_t` is 64-bit on the unix tier-1/tier-2 Rust targets
+    // (x86_64, aarch64-{linux,darwin}). It's still 32-bit on some
+    // tier-3 unix targets (e.g. some 32-bit BSD or musl variants), but
+    // every fixed test instant here (PINNED_MTIME_SECS, the FAT epoch)
+    // fits in a 32-bit signed time_t, so the narrowing cast is safe in
+    // practice. The cast avoids clippy's useless_conversion lint on
+    // 64-bit targets where time_t is already i64.
     let t: libc::time_t = unix_secs as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let ok = unsafe { libc::localtime_r(&t, &mut tm) };

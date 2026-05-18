@@ -160,8 +160,11 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 ## Phase 4: chunked extraction, large payloads
 
 The chunked decoder (`stubs/src/stub.c::main` per-chunk loop) and
-chunked encoder (`build_aplib_entry` / `build_stored_entry` splitting
-input at `APLIB_CHUNK_INPUT = 16 KiB`) shipped in Phase 2/3. FAT
+the chunked encoder shipped in Phase 2/3: `build_aplib_entry` split
+input at `APLIB_CHUNK_INPUT = 16 KiB`, and `build_stored_entry` split
+at the per-chunk u16 ceiling (`u16::MAX`). Phase 4's `--chunk-size`
+flag exposes both splitters as a user-tunable parameter (default
+16384, capped per-algorithm: aplib ≤ 16384, stored ≤ u16::MAX). FAT
 timestamp restoration and 8.3 mangling-with-warning shipped in Phase
 1/2. Phase 4 fills the user-facing input surface and adds the
 verify-gate tests PLAN.md §10 specifies.
