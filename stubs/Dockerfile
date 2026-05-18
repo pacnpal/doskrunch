@@ -20,7 +20,7 @@ ARG OW_URL=https://github.com/open-watcom/open-watcom-v2/releases/download/2026-
 ARG OW_SHA256=a339a23ab346b6e632f870aaa4c36a5424bb923197b96348e367ea07b84936cc
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl xz-utils make \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils make nasm \
  && mkdir -p /opt/watcom \
  && curl -fsSL -o /tmp/ow.tar.xz "$OW_URL" \
  && echo "$OW_SHA256  /tmp/ow.tar.xz" | sha256sum -c - \

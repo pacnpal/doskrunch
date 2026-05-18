@@ -544,6 +544,74 @@ pub fn read_trailer(tail: &[u8]) -> Result<u32, ArchiveError> {
     Ok(u32::from_le_bytes([t[4], t[5], t[6], t[7]]))
 }
 
+/// Uncompressed chunk-input cap for the aPLib path. aPLib's worst-case
+/// expansion is roughly `n + n/8 + 16`, so 16 KiB in → ≤18.4 KiB out, which
+/// fits comfortably in the per-chunk u16 `compressed_size` field and lets
+/// the 16-bit stub keep both src and dst scratch buffers in its small-model
+/// data segment (DS ≤ 64 KiB). Must match `BUF_SIZE` in `stubs/src/stub.c`.
+pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
+
+/// Producer-side ceiling on a single aPLib chunk's compressed size. The
+/// 16-bit stub's `g_src` scratch buffer (`APLIB_SRC_SIZE` in
+/// `stubs/src/stub.c`) is sized exactly to this value, so a chunk that
+/// passes this check is guaranteed not to trip the stub's runtime
+/// `die("aplib csize")` on a real DOS box. Without it, producer-side
+/// validation would only catch the much looser u16 overflow (65535) and
+/// a future apultra version with worse-than-expected expansion could
+/// silently emit archives that refuse to extract.
+pub const APLIB_MAX_COMPRESSED_CHUNK: usize = 18_464;
+
+/// Build an aPLib-compressed file entry. Each chunk's uncompressed
+/// payload is bounded by `APLIB_CHUNK_INPUT` so its compressed form
+/// fits in the per-chunk u16 size field even in the worst case. CRC32
+/// is computed over the uncompressed bytes, matching the stored path.
+pub fn build_aplib_entry(
+    name_8_3: &str,
+    attrs: u8,
+    timestamp: u32,
+    data: &[u8],
+) -> Result<FileEntry, ArchiveError> {
+    let crc = crc32fast::hash(data);
+    let mut name = name_8_3.as_bytes().to_vec();
+    name.push(0);
+    let chunks: Vec<Chunk> = if data.is_empty() {
+        vec![Chunk {
+            uncompressed_size: 0,
+            data: Vec::new(),
+        }]
+    } else {
+        let mut out = Vec::with_capacity(data.len().div_ceil(APLIB_CHUNK_INPUT));
+        for c in data.chunks(APLIB_CHUNK_INPUT) {
+            let compressed = crate::compress::aplib::compress(c)
+                .map_err(ArchiveError::AplibCompress)?;
+            // Tighter ceiling than u16::MAX: the 16-bit stub's g_src is
+            // exactly APLIB_MAX_COMPRESSED_CHUNK bytes. Refuse here so a
+            // host-produced archive never trips the runtime check on DOS.
+            if compressed.len() > APLIB_MAX_COMPRESSED_CHUNK {
+                return Err(ArchiveError::AplibChunkOverflow {
+                    uncompressed: c.len(),
+                    compressed: compressed.len(),
+                });
+            }
+            out.push(Chunk {
+                uncompressed_size: c.len() as u16,
+                data: compressed,
+            });
+        }
+        out
+    };
+    if chunks.len() > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(chunks.len()));
+    }
+    Ok(FileEntry {
+        name,
+        attrs,
+        timestamp,
+        chunks,
+        crc32: crc,
+    })
+}
+
 /// Build a stored-algorithm file entry from raw bytes. Each chunk's size
 /// is capped at u16; the per-file chunk count is also u16, so files
 /// over `(u16::MAX as usize) * (u16::MAX as usize) - 1` bytes are rejected.
@@ -602,6 +670,11 @@ pub enum ArchiveError {
         declared: u32,
         from_chunks: u32,
     },
+    AplibChunkOverflow {
+        uncompressed: usize,
+        compressed: usize,
+    },
+    AplibCompress(String),
 }
 
 impl std::fmt::Display for ArchiveError {
@@ -633,6 +706,14 @@ impl std::fmt::Display for ArchiveError {
                 f,
                 "file {file}: declared uncompressed size {declared} != sum of chunks {from_chunks}"
             ),
+            Self::AplibChunkOverflow {
+                uncompressed,
+                compressed,
+            } => write!(
+                f,
+                "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, overflowing the u16 per-chunk size field"
+            ),
+            Self::AplibCompress(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -685,6 +766,48 @@ mod tests {
         let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
         assert_eq!(total as usize, data.len());
         roundtrip(vec![entry]);
+    }
+
+    fn aplib_roundtrip(files: Vec<FileEntry>) {
+        let mut a = Archive::new(Algorithm::Aplib, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = files;
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let parsed = Archive::read(&mut r).unwrap();
+        assert_eq!(a, parsed);
+    }
+
+    #[test]
+    fn aplib_single_file_roundtrips() {
+        let data = b"hello aplib world, hello aplib world, hello aplib world.".repeat(8);
+        let entry = build_aplib_entry("HELLO.TXT", 0x20, 0, &data).unwrap();
+        // Compressed should be strictly smaller than uncompressed for a repetitive input.
+        let csz: usize = entry.chunks.iter().map(|c| c.data.len()).sum();
+        assert!(csz < data.len(), "expected compression: csz={csz} usz={}", data.len());
+        assert_eq!(entry.uncompressed_size() as usize, data.len());
+        aplib_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn aplib_empty_file_roundtrips() {
+        let entry = build_aplib_entry("EMPTY.BIN", 0x20, 0, b"").unwrap();
+        assert_eq!(entry.uncompressed_size(), 0);
+        aplib_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn aplib_multi_chunk_file_roundtrips() {
+        // Force >1 chunk by exceeding APLIB_CHUNK_INPUT.
+        let data: Vec<u8> = (0..(APLIB_CHUNK_INPUT + 1024))
+            .map(|i| (i & 0xff) as u8)
+            .collect();
+        let entry = build_aplib_entry("BIG.BIN", 0x20, 0, &data).unwrap();
+        assert!(entry.chunks.len() >= 2, "should split into multiple chunks");
+        let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
+        assert_eq!(total as usize, data.len());
+        aplib_roundtrip(vec![entry]);
     }
 
     #[test]

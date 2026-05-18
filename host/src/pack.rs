@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::archive::{build_stored_entry, flags, Algorithm, Archive, TargetTier};
+use crate::archive::{build_aplib_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier};
 use crate::fat_time::unix_to_fat;
 use crate::name83::{dedupe, mangle};
 use crate::stubs::stub_for;
@@ -19,16 +19,12 @@ pub struct PackOptions {
 }
 
 pub fn pack(opts: PackOptions) -> Result<()> {
-    if matches!(opts.algorithm, Algorithm::Lzma)
-        && matches!(opts.target, TargetTier::I8086 | TargetTier::I286)
-    {
-        bail!("LZMA requires 386 or later; pick --target 386 or higher.");
-    }
-    if !matches!(opts.algorithm, Algorithm::Stored) {
-        bail!(
-            "algorithm '{}' not yet supported in this phase; only 'stored' is available",
-            opts.algorithm.name()
-        );
+    match opts.algorithm {
+        Algorithm::Stored | Algorithm::Aplib => {}
+        Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
+        Algorithm::Lzma => bail!(
+            "algorithm 'lzma' lands in phase 5 (and will require --target 386+ when enabled)"
+        ),
     }
 
     let stub = stub_for(opts.algorithm, opts.target)
@@ -151,8 +147,13 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         if data.len() > u32::MAX as usize {
             bail!("{}: file exceeds 4 GiB", src.display());
         }
-        let entry = build_stored_entry(&stored_name, 0x20, timestamp, &data)
-            .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
+        let entry = match opts.algorithm {
+            Algorithm::Stored => build_stored_entry(&stored_name, 0x20, timestamp, &data),
+            Algorithm::Aplib => build_aplib_entry(&stored_name, 0x20, timestamp, &data),
+            // Lzsa2/Lzma rejected earlier; unreachable here.
+            other => bail!("internal: unexpected algorithm {}", other.name()),
+        }
+        .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
         archive.files.push(entry);
     }
 
@@ -233,7 +234,8 @@ mod tests {
             preserve_timestamps: false,
         };
         let err = pack(opts).unwrap_err();
-        assert!(err.to_string().contains("LZMA requires 386"));
+        assert!(err.to_string().contains("lzma"));
+        assert!(err.to_string().contains("phase 5"));
     }
 
     #[test]

@@ -33,16 +33,20 @@ jobs:
         # the same command locally).
         run: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
 
-      - name: Verify committed blob matches the rebuild
-        run: |
-          # If anything under stubs/blobs/ drifted, fail so the PR author
-          # is forced to commit the rebuild. include_bytes! in the Rust
-          # host pins us to the on-disk copy.
-          git diff --exit-code -- stubs/blobs/
-
+      # Upload the rebuilt blobs FIRST. The drift check below fails for
+      # any source-side change until the matching blob is committed —
+      # we still want the artifact in hand so PR authors can pull the
+      # new blob and commit it without having to install Watcom locally.
       - name: Upload stub blobs
         uses: actions/upload-artifact@v4
         with:
           name: stubs-blobs
           path: stubs/blobs/*.bin
           if-no-files-found: error
+
+      - name: Verify committed blob matches the rebuild
+        run: |
+          # If anything under stubs/blobs/ drifted, fail so the PR author
+          # is forced to commit the rebuild. include_bytes! in the Rust
+          # host pins us to the on-disk copy.
+          git diff --exit-code -- stubs/blobs/
