@@ -307,25 +307,30 @@ int main(int argc, char **argv)
                 if (copy_bytes(self, out, (u32)csize) != 0) die("copy");
             } else {
                 /* aplib: read whole compressed chunk, depack, write out. */
+                static const char hexd[] = "0123456789abcdef";
+                char dbg[32];
+                u16 usize_before, usize_after;
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
+                usize_before = usize;
                 produced = aplib_depack(g_src, g_buf);
+                usize_after = usize;
                 if (produced != usize) {
-                    /* TEMP DEBUG: print observed vs expected size in hex */
-                    static const char hexd[] = "0123456789abcdef";
-                    char dbg[32];
-                    dbg[0] = 'p'; dbg[1] = '=';
-                    dbg[2] = hexd[(produced >> 12) & 0xf];
-                    dbg[3] = hexd[(produced >> 8) & 0xf];
-                    dbg[4] = hexd[(produced >> 4) & 0xf];
-                    dbg[5] = hexd[produced & 0xf];
-                    dbg[6] = ' '; dbg[7] = 'u'; dbg[8] = '=';
-                    dbg[9]  = hexd[(usize >> 12) & 0xf];
-                    dbg[10] = hexd[(usize >> 8) & 0xf];
-                    dbg[11] = hexd[(usize >> 4) & 0xf];
-                    dbg[12] = hexd[usize & 0xf];
-                    dbg[13] = '\0';
+                    /* TEMP DEBUG */
+                    dbg[0]='p'; dbg[1]='=';
+                    dbg[2]=hexd[(produced>>12)&0xf]; dbg[3]=hexd[(produced>>8)&0xf];
+                    dbg[4]=hexd[(produced>>4)&0xf];  dbg[5]=hexd[produced&0xf];
+                    dbg[6]=' '; dbg[7]='b'; dbg[8]='=';
+                    dbg[9]=hexd[(usize_before>>12)&0xf]; dbg[10]=hexd[(usize_before>>8)&0xf];
+                    dbg[11]=hexd[(usize_before>>4)&0xf]; dbg[12]=hexd[usize_before&0xf];
+                    dbg[13]=' '; dbg[14]='a'; dbg[15]='=';
+                    dbg[16]=hexd[(usize_after>>12)&0xf]; dbg[17]=hexd[(usize_after>>8)&0xf];
+                    dbg[18]=hexd[(usize_after>>4)&0xf];  dbg[19]=hexd[usize_after&0xf];
+                    dbg[20]=' '; dbg[21]='u'; dbg[22]='=';
+                    dbg[23]=hexd[(usize>>12)&0xf]; dbg[24]=hexd[(usize>>8)&0xf];
+                    dbg[25]=hexd[(usize>>4)&0xf];  dbg[26]=hexd[usize&0xf];
+                    dbg[27]='\0';
                     puts2("doskrunch: aplib size mismatch ");
                     puts2(dbg);
                     puts2("\r\n");
