@@ -167,18 +167,28 @@ timestamp restoration and 8.3 mangling-with-warning shipped in Phase
 verify-gate tests PLAN.md §10 specifies.
 
 - [x] Directory walking in `host/src/pack.rs` — recursive walk via
-      `expand_inputs` + `walk_dir`. Symlinks skipped (no follow). Each
-      `read_dir` result sorted per directory so the walk itself is
-      reproducible across hosts; pack's downstream "sort by mangled
-      8.3" pass is what guarantees the on-disk byte sequence is
-      identical across runs.
+      `expand_inputs` + `walk_dir`. Symlinks skipped whether named as
+      a top-level input or found during the walk (no follow). The
+      output path is excluded from the walk so `pack dir/OUT.EXE dir/`
+      doesn't pack a previous SFX into the new one. Each `read_dir`
+      result sorted per directory so the walk itself is reproducible
+      across hosts; pack's downstream "sort by mangled 8.3" pass is
+      what guarantees the on-disk byte sequence is identical across
+      runs. `read_dir` iteration errors bubble up rather than being
+      silently dropped — a partial-walk would silently produce an
+      incomplete SFX otherwise.
 - [x] `--chunk-size <bytes>` CLI flag. Default 16384 (= stub BSS
       budget); validated at the CLI layer to `1..=16384` for aplib,
-      `1..=u16::MAX` for stored. Stub unchanged — the on-disk archive
-      records per-chunk sizes that the stub reads back as-is. The flag
-      lets users tune host RAM during pack without touching the stub.
-      32 KiB default explicitly **not** taken in Phase 4 — see the
-      "subtle issues" note in the Phase 4 brief; bumping default
+      `1..=u16::MAX` for stored. CLI validation is gated on
+      shipped algorithms, so `--algo lzma --chunk-size 99999` returns
+      the "lzma lands in phase 5" bail from `pack()` rather than a
+      chunk-size error against a placeholder ceiling. Stub unchanged —
+      the on-disk archive records per-chunk sizes that the stub reads
+      back as-is. Because pack reads each input fully into memory
+      before encoding, the value controls archive layout (chunk count,
+      framing overhead) and the transient encode buffer, NOT peak host
+      RAM. 32 KiB default explicitly **not** taken in Phase 4 — see
+      the "subtle issues" note in the Phase 4 brief; bumping default
       requires either a memory-model change in the stub or DOS-side
       heap allocation, neither of which the verify gate asks for.
 - [x] Test helpers consolidated: `WaitError`, `wait_with_timeout`,
@@ -222,12 +232,13 @@ verify-gate tests PLAN.md §10 specifies.
 - [x] `cargo test --workspace` green (50 unit + 11 integration: 8
       roundtrip + 3 aplib_roundtrip; ignored DOSBox-X gates remain
       gated).
-- [ ] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
+- [x] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
       extracts byte-identical fixtures and payloads under
       `cputype=8086`, `cputype=386`, `cputype=pentium` across the
       original six Phase 3 gates plus the two new Phase 4 gates
-      (2 MB memsize=2 + timestamps). Verified once CI's
-      `dosbox-x-integration` job runs the full suite.
+      (2 MB memsize=2 + timestamps). All 10 ignored gates pass
+      locally under dosbox-x 2026.05.02 in ~3 min total. CI's
+      `dosbox-x-integration` job runs the same set on Ubuntu 24.04.
 - [x] `cargo run -- pack out.exe some/dir/` walks the directory,
       packs every regular file under it in deterministically-sorted
       order, byte-identical across reruns.

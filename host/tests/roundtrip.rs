@@ -173,12 +173,17 @@ fn directory_pack_is_deterministic_across_two_invocations() {
 
 #[test]
 fn chunk_size_flag_respected_end_to_end() {
-    // Pack with a tiny chunk size and verify the produced archive uses
-    // chunks of at most that size. Uses `inspect` indirectly via
-    // unpack roundtrip — the meaningful check is that the file
-    // extracts byte-identical after being split into many small chunks.
+    // Pack with a tiny chunk size and verify the produced archive
+    // actually uses chunks of at most that size — re-open the archive
+    // via doskrunch::unpack::load_archive and inspect each chunk's
+    // declared uncompressed_size. Without this check, a CLI bug that
+    // silently ignored --chunk-size and produced 16 KiB chunks would
+    // still pass an unpack-and-diff roundtrip.
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("payload.bin");
+    // 40_000 bytes at 4 KiB chunks = 10 chunks minimum; at the
+    // default 16 KiB chunks it'd be only 3, so chunk count alone
+    // also distinguishes the two cases.
     let bytes: Vec<u8> = (0..40_000u32).map(|i| (i & 0xff) as u8).collect();
     std::fs::write(&src, &bytes).unwrap();
 
@@ -190,6 +195,22 @@ fn chunk_size_flag_respected_end_to_end() {
         .args(["--algo", "aplib", "--target", "8086", "--chunk-size", "4096"]);
     let status = pack.status().unwrap();
     assert!(status.success(), "pack with --chunk-size failed");
+
+    let archive = doskrunch::unpack::load_archive(&exe).expect("load archive");
+    assert_eq!(archive.files.len(), 1);
+    let entry = &archive.files[0];
+    assert!(
+        entry.chunks.len() >= 10,
+        "40_000 B at chunk_size=4096 should produce ≥10 chunks; got {}",
+        entry.chunks.len()
+    );
+    for c in &entry.chunks {
+        assert!(
+            c.uncompressed_size as usize <= 4096,
+            "chunk uncompressed_size {} exceeds --chunk-size 4096; CLI flag not threaded through",
+            c.uncompressed_size,
+        );
+    }
 
     let extracted = tmp.path().join("out");
     let mut unpack = doskrunch();

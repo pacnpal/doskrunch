@@ -16,12 +16,21 @@
 //!      `filetime::set_file_mtime` (rather than relying on the test
 //!      machine's current wall-clock) keeps the comparison stable
 //!      across reruns and across CI host clocks.
-//!   2. A pre-1980 source mtime (FAT can't represent dates before
-//!      1980) is packed as a zero timestamp; the stub skips
-//!      `_dos_setftime` on the zero case, so DOSBox-X writes the file
-//!      with whatever current-clock mtime DOS supplies. Verifies the
-//!      zero-skip path is still in place (defends against someone
-//!      removing the `if (dos_date != 0 || dos_time != 0)` guard).
+//!   2. A pre-1980 source mtime is clamped by `fat_time::unix_to_fat`
+//!      to the 1980-01-01 FAT epoch endpoint — i.e. a non-zero
+//!      timestamp that the stub WILL `_dos_setftime` to. The extracted
+//!      file should land near 1980-01-01 on disk, NOT the host's
+//!      wall-clock-now; this defends the clamp end-to-end against
+//!      regressions in either `fat_time` or the stub's per-file
+//!      timestamp wiring.
+//!
+//! Source-file layout: each test creates its source file in a
+//! separate `srcdir` outside the DOSBox-X-mounted run directory. If
+//! we left the source alongside the extracted file, the case-
+//! insensitive lookup `locate_case_insensitive(rundir, "STAMPED.TXT")`
+//! could match the original `stamped.txt` on a case-sensitive host
+//! filesystem and accidentally pass without actually verifying what
+//! the stub wrote.
 //!
 //! `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked;
 //! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
@@ -115,15 +124,20 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
     //      every meaningful failure (FAT date garbage, stub overrun,
     //      `_dos_setftime` skipped, wrong year) while tolerating any
     //      world timezone.
-    let work = tempfile::tempdir().expect("create tempdir");
-    let work_path = work.path();
+    //
+    // Source file lives in `srcdir`, OUTSIDE the DOSBox-X mount, so
+    // the case-insensitive lookup below can't accidentally match the
+    // original `stamped.txt` instead of the extracted `STAMPED.TXT`.
+    let srcdir = tempfile::tempdir().expect("create srcdir");
+    let rundir = tempfile::tempdir().expect("create rundir");
+    let rundir_path = rundir.path();
 
-    let src = work_path.join("stamped.txt");
+    let src = srcdir.path().join("stamped.txt");
     fs::write(&src, b"stamped content\n").expect("write source");
     set_file_mtime(&src, FileTime::from_unix_time(PINNED_MTIME_SECS, 0))
         .expect("set source mtime");
 
-    let sfx_path = work_path.join("OUT.EXE");
+    let sfx_path = rundir_path.join("OUT.EXE");
     let bin = env!("CARGO_BIN_EXE_doskrunch");
     let status = Command::new(bin)
         .arg("pack")
@@ -155,11 +169,11 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
     // the extracted file's mtime is near (±24 h, see above) the pinned
     // value. A regression that removes the `_dos_setftime` call would
     // leave the file dated "now" and fail this slack check.
-    let conf_path = work_path.join("dosbox.conf");
-    write_dosbox_conf(&conf_path, work_path);
-    run_dosbox(work_path, &conf_path, "pinned-mtime");
+    let conf_path = rundir_path.join("dosbox.conf");
+    write_dosbox_conf(&conf_path, rundir_path);
+    run_dosbox(rundir_path, &conf_path, "pinned-mtime");
 
-    let extracted = locate_case_insensitive(work_path, "STAMPED.TXT")
+    let extracted = locate_case_insensitive(rundir_path, "STAMPED.TXT")
         .expect("missing STAMPED.TXT");
     let got_mtime = fs::metadata(&extracted)
         .expect("stat extracted")
@@ -182,15 +196,15 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
-fn pre_1980_source_mtime_extracts_with_dos_now_mtime() {
-    // Source mtime: 1970-01-01 00:00:00. fat_time clamps to 1980 and
-    // returns a non-zero packed timestamp — so the stub WOULD call
-    // _dos_setftime — but the resulting date (1980-01-01) is the
-    // earliest representable FAT date. What we're actually verifying
-    // here is that the round-trip doesn't crash and that the
-    // extracted file is dated 1980-01-01 (the clamp endpoint), NOT
-    // the host's current wall-clock — i.e. the pack-side clamp is
-    // wired through to the stub side correctly.
+fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
+    // Source mtime: 1970-01-01 00:00:00. fat_time::unix_to_fat clamps
+    // to 1980 and returns a NON-ZERO packed timestamp — so the stub
+    // calls _dos_setftime — but the resulting date (1980-01-01) is
+    // the earliest representable FAT date. What we're actually
+    // verifying here is that the extracted file is dated near
+    // 1980-01-01 (the clamp endpoint), NOT the host's current
+    // wall-clock — i.e. the pack-side clamp is wired through to the
+    // stub side correctly.
     //
     // The "zero-skip" path on the stub side (`if (dos_date != 0 ||
     // dos_time != 0)`) isn't exercised under --preserve-timestamps
@@ -200,15 +214,19 @@ fn pre_1980_source_mtime_extracts_with_dos_now_mtime() {
     // explicitly set to 0; that path is exercised implicitly by
     // every other dosbox_* gate. Keep this test focused on the
     // pre-1980 clamp end-to-end.
-    let work = tempfile::tempdir().expect("create tempdir");
-    let work_path = work.path();
+    //
+    // Same srcdir-vs-rundir layout as the pinned test — see the
+    // module docstring for why.
+    let srcdir = tempfile::tempdir().expect("create srcdir");
+    let rundir = tempfile::tempdir().expect("create rundir");
+    let rundir_path = rundir.path();
 
-    let src = work_path.join("old.txt");
+    let src = srcdir.path().join("old.txt");
     fs::write(&src, b"old\n").expect("write source");
     set_file_mtime(&src, FileTime::from_unix_time(0, 0))
         .expect("set source mtime");
 
-    let sfx_path = work_path.join("OUT.EXE");
+    let sfx_path = rundir_path.join("OUT.EXE");
     let bin = env!("CARGO_BIN_EXE_doskrunch");
     let status = Command::new(bin)
         .arg("pack")
@@ -219,11 +237,11 @@ fn pre_1980_source_mtime_extracts_with_dos_now_mtime() {
         .expect("spawn doskrunch pack");
     assert!(status.success(), "pack failed: {status:?}");
 
-    let conf_path = work_path.join("dosbox.conf");
-    write_dosbox_conf(&conf_path, work_path);
-    run_dosbox(work_path, &conf_path, "pre-1980-mtime");
+    let conf_path = rundir_path.join("dosbox.conf");
+    write_dosbox_conf(&conf_path, rundir_path);
+    run_dosbox(rundir_path, &conf_path, "pre-1980-mtime");
 
-    let extracted = locate_case_insensitive(work_path, "OLD.TXT")
+    let extracted = locate_case_insensitive(rundir_path, "OLD.TXT")
         .expect("missing OLD.TXT");
     let got_mtime = fs::metadata(&extracted)
         .expect("stat extracted")

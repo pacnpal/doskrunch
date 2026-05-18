@@ -18,11 +18,15 @@ pub struct PackOptions {
     pub algorithm: Algorithm,
     pub target: TargetTier,
     pub preserve_timestamps: bool,
-    /// Max bytes per uncompressed chunk. Default `APLIB_CHUNK_INPUT`
-    /// (16 KiB) — same value the stub's BSS scratch is sized for. Smaller
-    /// values trade a sliver of compression ratio for proportionally less
-    /// per-chunk host memory during pack; larger values are rejected at
-    /// the CLI layer because the stub's small-model DS can't hold them.
+    /// Max bytes per uncompressed chunk. The per-algorithm ceilings
+    /// are: aplib ≤ `APLIB_CHUNK_INPUT` (16 KiB, the stub's BSS scratch
+    /// size); stored ≤ `u16::MAX` (the per-chunk size field). Today
+    /// pack reads each input file fully into memory before encoding,
+    /// so `chunk_size` does NOT bound peak host RAM during pack — it
+    /// controls archive layout (how many chunks per file, per-chunk
+    /// framing overhead) and the transient encode buffer. The default
+    /// matches the stub's BSS budget; smaller values exist mostly for
+    /// testing chunked decode paths.
     pub chunk_size: usize,
 }
 
@@ -94,8 +98,11 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // Symlinks are not followed (avoids cycles and surprise inclusion of
     // files outside the named tree). Hidden / dotfile names are kept —
     // DOS has no leading-dot convention, so a `.gitignore` named on
-    // purpose is intended.
-    let expanded = expand_inputs(&opts.inputs)?;
+    // purpose is intended. The output path is excluded so re-running
+    // `doskrunch pack dir/OUT.EXE dir/` doesn't pack the previous SFX
+    // into the new SFX (which would also break rerun determinism).
+    let exclude = canonicalize_for_exclude(&opts.output);
+    let expanded = expand_inputs(&opts.inputs, exclude.as_deref())?;
     if expanded.len() > u16::MAX as usize {
         bail!(
             "too many input files ({}); archive header file_count is u16",
@@ -215,8 +222,12 @@ pub fn pack(opts: PackOptions) -> Result<()> {
 }
 
 /// Expand `inputs` into a flat list of regular files. Directory inputs
-/// are walked recursively; symlinks (file or dir) are skipped to avoid
-/// cycles and to keep the included set within the named tree.
+/// are walked recursively; symlinks (whether passed as top-level
+/// inputs or encountered during the walk) are skipped to avoid cycles
+/// and to keep the included set within the named tree. `exclude`, if
+/// provided, is a canonical path that should be omitted from the
+/// walk — used to skip the pack's own output file when it sits inside
+/// a walked directory.
 ///
 /// Walk order: each `read_dir` result is sorted by path before recursion
 /// so the final list is identical across hosts (HFS+/ext4/NTFS all
@@ -225,23 +236,24 @@ pub fn pack(opts: PackOptions) -> Result<()> {
 /// reproducible output bytes — but pre-sorting here keeps the walk
 /// itself deterministic, which matters for any caller that wants to
 /// reason about pack ordering without relying on that downstream sort.
-fn expand_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+fn expand_inputs(inputs: &[PathBuf], exclude: Option<&Path>) -> Result<Vec<PathBuf>> {
     let mut out = Vec::with_capacity(inputs.len());
     for top in inputs {
         // `symlink_metadata` so a symlinked top-level input is skipped
-        // rather than silently dereferenced.
+        // rather than silently dereferenced. Matches walk-time symlink
+        // handling; documented behaviour in pack's CLI help.
         let meta = fs::symlink_metadata(top)
             .with_context(|| format!("stat {}", top.display()))?;
         if meta.file_type().is_symlink() {
-            bail!(
-                "{}: input is a symlink; symlinks aren't followed",
-                top.display()
-            );
+            continue;
+        }
+        if matches_exclude(top, exclude) {
+            continue;
         }
         if meta.is_file() {
             out.push(top.clone());
         } else if meta.is_dir() {
-            walk_dir(top, &mut out)?;
+            walk_dir(top, &mut out, exclude)?;
         } else {
             bail!(
                 "{}: not a regular file or directory (block dev / fifo / socket?)",
@@ -252,13 +264,20 @@ fn expand_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, exclude: Option<&Path>) -> Result<()> {
+    // Propagate read_dir iteration errors instead of swallowing them —
+    // a transient EACCES / EIO halfway through a directory should fail
+    // the pack rather than silently producing an incomplete SFX.
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .with_context(|| format!("read_dir {}", dir.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("iter {}", dir.display()))?;
     entries.sort();
     for path in entries {
+        if matches_exclude(&path, exclude) {
+            continue;
+        }
         let meta = fs::symlink_metadata(&path)
             .with_context(|| format!("stat {}", path.display()))?;
         let ft = meta.file_type();
@@ -270,12 +289,29 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         if ft.is_file() {
             out.push(path);
         } else if ft.is_dir() {
-            walk_dir(&path, out)?;
+            walk_dir(&path, out, exclude)?;
         }
         // Other file types (block dev, char dev, FIFO, socket) are
         // silently skipped; they don't belong in a DOS SFX.
     }
     Ok(())
+}
+
+/// Canonicalize `path` for use as the walk-exclusion key. Returns
+/// `None` if the path doesn't yet exist on disk (e.g. the first pack
+/// run before the output file is created) — there's nothing to exclude
+/// in that case.
+fn canonicalize_for_exclude(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
+}
+
+fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
+    let Some(target) = exclude else {
+        return false;
+    };
+    fs::canonicalize(candidate)
+        .map(|c| c == target)
+        .unwrap_or(false)
 }
 
 /// Return true if a mangled 8.3 name corresponds to a DOS/Windows
@@ -388,7 +424,7 @@ mod tests {
         let b = make_input(&src.join("sub"), "b.txt", b"bravo");
         let c = make_input(&src.join("sub"), "c.txt", b"charlie");
 
-        let expanded = expand_inputs(&[src.clone()]).unwrap();
+        let expanded = expand_inputs(&[src.clone()], None).unwrap();
         // expand_inputs preserves walk order (sorted per directory).
         assert_eq!(expanded.len(), 3);
         assert!(expanded.contains(&a));
@@ -396,19 +432,72 @@ mod tests {
         assert!(expanded.contains(&c));
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_skips_symlinks() {
         let td = tempfile::tempdir().unwrap();
         let src = td.path().join("src");
         fs::create_dir(&src).unwrap();
         let _real = make_input(&src, "real.txt", b"keep");
-        // Best-effort symlink: skip the assertion on platforms that
-        // don't support it (e.g., Windows without dev-mode).
         let target = src.join("real.txt");
         let link = src.join("link.txt");
-        if std::os::unix::fs::symlink(&target, &link).is_ok() {
-            let expanded = expand_inputs(&[src.clone()]).unwrap();
-            assert_eq!(expanded.len(), 1, "symlink should be skipped");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let expanded = expand_inputs(&[src.clone()], None).unwrap();
+        assert_eq!(expanded.len(), 1, "symlink should be skipped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn top_level_symlink_is_skipped() {
+        // Matches CLI help: top-level symlink inputs are skipped, not
+        // an error — same behaviour as symlinks encountered during a
+        // directory walk.
+        let td = tempfile::tempdir().unwrap();
+        let real = make_input(td.path(), "real.txt", b"data");
+        let link = td.path().join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let expanded = expand_inputs(&[link.clone(), real.clone()], None).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0], real);
+    }
+
+    #[test]
+    fn pack_excludes_its_own_output_inside_walked_directory() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let real = make_input(&src, "real.txt", b"keep");
+        // Pretend an earlier pack already produced OUT.EXE inside src/.
+        let out = src.join("OUT.EXE");
+        fs::write(&out, b"\x4d\x5afakeexe").unwrap();
+        let out_canonical = fs::canonicalize(&out).unwrap();
+        let expanded = expand_inputs(&[src.clone()], Some(&out_canonical)).unwrap();
+        assert_eq!(expanded.len(), 1, "previous OUT.EXE must be skipped");
+        assert!(expanded.contains(&real));
+    }
+
+    #[test]
+    fn walk_propagates_read_dir_iteration_errors() {
+        // We can't easily fault-inject mid-iteration, but we can prove
+        // the unreadable-directory case bails instead of returning an
+        // empty list. Only check on Unix where chmod is reliable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("noaccess");
+            fs::create_dir(&src).unwrap();
+            make_input(&src, "real.txt", b"keep");
+            // Drop the read bit; opendir() now returns EACCES.
+            let mut perms = fs::metadata(&src).unwrap().permissions();
+            perms.set_mode(0o000);
+            fs::set_permissions(&src, perms).unwrap();
+            let err = expand_inputs(&[src.clone()], None).err();
+            // Restore so the tempdir cleanup works.
+            let mut perms = fs::metadata(&src).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&src, perms).unwrap();
+            assert!(err.is_some(), "EACCES on read_dir must bail the pack");
         }
     }
 }

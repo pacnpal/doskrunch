@@ -577,11 +577,13 @@ pub fn build_aplib_entry(
     data: &[u8],
     chunk_size: usize,
 ) -> Result<FileEntry, ArchiveError> {
-    assert!(
-        (1..=APLIB_CHUNK_INPUT).contains(&chunk_size),
-        "chunk_size {chunk_size} out of valid range 1..={APLIB_CHUNK_INPUT}; \
-         CLI layer must validate"
-    );
+    if !(1..=APLIB_CHUNK_INPUT).contains(&chunk_size) {
+        return Err(ArchiveError::InvalidChunkSize {
+            algorithm: "aplib",
+            given: chunk_size,
+            max: APLIB_CHUNK_INPUT,
+        });
+    }
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
@@ -636,12 +638,13 @@ pub fn build_stored_entry(
     data: &[u8],
     chunk_size: usize,
 ) -> Result<FileEntry, ArchiveError> {
-    assert!(
-        (1..=(u16::MAX as usize)).contains(&chunk_size),
-        "chunk_size {chunk_size} out of valid range 1..={}; \
-         CLI layer must validate",
-        u16::MAX
-    );
+    if !(1..=(u16::MAX as usize)).contains(&chunk_size) {
+        return Err(ArchiveError::InvalidChunkSize {
+            algorithm: "stored",
+            given: chunk_size,
+            max: u16::MAX as usize,
+        });
+    }
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
@@ -695,6 +698,11 @@ pub enum ArchiveError {
         compressed: usize,
     },
     AplibCompress(String),
+    InvalidChunkSize {
+        algorithm: &'static str,
+        given: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for ArchiveError {
@@ -734,6 +742,14 @@ impl std::fmt::Display for ArchiveError {
                 "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, overflowing the u16 per-chunk size field"
             ),
             Self::AplibCompress(msg) => write!(f, "{msg}"),
+            Self::InvalidChunkSize {
+                algorithm,
+                given,
+                max,
+            } => write!(
+                f,
+                "chunk_size {given} is outside the valid range 1..={max} for algorithm '{algorithm}'"
+            ),
         }
     }
 }
