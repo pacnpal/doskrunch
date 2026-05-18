@@ -289,15 +289,20 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, exclude: Option<&Path>) -> Resul
         .with_context(|| format!("iter {}", dir.display()))?;
     entries.sort();
     for path in entries {
-        if matches_exclude(&path, exclude) {
-            continue;
-        }
+        // Symlink check FIRST. `matches_exclude` calls `fs::canonicalize`,
+        // which follows symlinks — checking it before the symlink test
+        // would dereference any symlinked entry under the walked tree
+        // (the canonicalize might also error harmlessly on a dangling
+        // symlink, but we'd still have lost the no-follow contract).
         let meta =
             fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         let ft = meta.file_type();
         if ft.is_symlink() {
             // Skip silently — most workflows have stray symlinks and
             // failing the whole pack on them is noisier than dropping.
+            continue;
+        }
+        if matches_exclude(&path, exclude) {
             continue;
         }
         if ft.is_file() {

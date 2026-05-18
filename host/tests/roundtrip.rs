@@ -222,17 +222,15 @@ fn chunk_size_flag_respected_end_to_end() {
 
 #[test]
 fn stored_max_chunk_size_roundtrips_via_host_unpack() {
-    // Stored allows `--chunk-size` up to u16::MAX (65535), which is
-    // larger than the stub's BUF_SIZE=16384 copy buffer. The stub's
-    // copy_bytes() loop streams a chunk through that buffer in
-    // BUF_SIZE-sized reads, so a 65535-byte chunk takes 4 reads
-    // (16384 + 16384 + 16384 + 16383). Verify the host-side encode
-    // emits the requested chunk size and that a roundtrip through
-    // the host's unpack reconstructs the bytes — the matching
-    // stub-side copy_bytes path is already exercised end-to-end by
-    // the 2 MB / 500 KiB aplib DOSBox-X gates (same loop, same
-    // BUF_SIZE; the algorithm dispatch only differs in whether the
-    // bytes flow through aplib_depack first).
+    // Host-side sanity check that --chunk-size 65535 produces the
+    // requested 4-chunk archive layout (200_000 B / 65535 ≈ 4 chunks)
+    // and round-trips byte-identical through `doskrunch unpack`.
+    // This does NOT exercise the DOS stub's `copy_bytes` loop — that
+    // happens in `dosbox_stored_max_chunk.rs`, which runs the same
+    // archive under DOSBox-X. The aplib large-payload DOSBox-X gates
+    // (500 KiB, 2 MiB) cover a different stub path: aplib chunks
+    // flow through `g_src` → `aplib_depack` → `g_buf` → single
+    // write, not through the `copy_bytes` chunk-streaming loop.
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("payload.bin");
     let bytes: Vec<u8> = (0..200_000u32).map(|i| (i & 0xff) as u8).collect();
