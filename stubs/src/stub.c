@@ -311,7 +311,26 @@ int main(int argc, char **argv)
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
                 produced = aplib_depack(g_src, g_buf);
-                if (produced != usize) die("aplib size");
+                if (produced != usize) {
+                    /* TEMP DEBUG: print observed vs expected size in hex */
+                    static const char hexd[] = "0123456789abcdef";
+                    char dbg[32];
+                    dbg[0] = 'p'; dbg[1] = '=';
+                    dbg[2] = hexd[(produced >> 12) & 0xf];
+                    dbg[3] = hexd[(produced >> 8) & 0xf];
+                    dbg[4] = hexd[(produced >> 4) & 0xf];
+                    dbg[5] = hexd[produced & 0xf];
+                    dbg[6] = ' '; dbg[7] = 'u'; dbg[8] = '=';
+                    dbg[9]  = hexd[(usize >> 12) & 0xf];
+                    dbg[10] = hexd[(usize >> 8) & 0xf];
+                    dbg[11] = hexd[(usize >> 4) & 0xf];
+                    dbg[12] = hexd[usize & 0xf];
+                    dbg[13] = '\0';
+                    puts2("doskrunch: aplib size mismatch ");
+                    puts2(dbg);
+                    puts2("\r\n");
+                    exit(1);
+                }
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
                 }
