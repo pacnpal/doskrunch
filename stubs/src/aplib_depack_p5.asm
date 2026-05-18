@@ -27,10 +27,11 @@
 ;      informational and matches the Watcom `-5` flag used to compile
 ;      stub.c into the pentium stub.
 ;    * `apl_get_bit_inline` macro replaces the `call bp` indirect
-;      dispatch from the size-opt port. Each macro expansion is 6 bytes
-;      (`add al, al / jnz / a32 lodsb / adc al, al`), which costs code
-;      size but removes a call/ret pair and a register-indirect branch
-;      from every bit read.
+;      dispatch from the size-opt port. Each macro expansion is 8 bytes
+;      under bits 16 + cpu pentium: `add al,al` (00 C0), `jnz %%gotbit`
+;      (75 XX), `a32 lodsb` (67 AC), `adc al,al` (10 C0) — 4 × 2 = 8.
+;      The macro costs code size at every bit read but removes a
+;      call/ret pair and a register-indirect branch from the hot path.
 ;    * Manual U/V pipe scheduling is *not* applied in this revision.
 ;      PLAN.md §10 Phase 3 anticipates a hand-scheduled depacker (5–10×
 ;      speedup over 8086). The unscheduled fast variant is benchmarked

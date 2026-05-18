@@ -116,17 +116,25 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
       byte-identical fixtures under `cputype=8086`, `cputype=386`,
       and `cputype=pentium` (four DOSBox-X gates pass locally).
 - [x] Stub blob sizes within hard ceilings for every tier.
-- [ ] PLAN.md §10 "386 ≈ 2–4× 8086, pentium ≈ 5–10× 8086" speedup
-      gate. Current `tests/benchmarks/results.md` shows ≈1.00× /
-      1.10× under DOSBox-X with `cycles=auto`; the verify-gate
-      assumption is real-hardware performance and DOSBox-X's
-      heuristic cycle scaler doesn't reflect that. The asm ports
-      verifiably work (byte-identical round-trip across every tier);
-      hitting the speedup gate needs either real-iron measurement
-      (86Box / a real 386 or Pentium box) or a stub-side INT 1Ah
-      cycle-counter so the host harness can subtract DOS startup
-      overhead. Tracked here for the user to direct — per PLAN.md's
-      "push back before debugging the asm" guidance.
+- [ ] PLAN.md §10 Phase 3 Verify: "386 is 2-4x faster than 8086,
+      pentium is 5-10x faster" speedup gate. **Not met.**
+      `tests/benchmarks/results.md` currently shows 1.00× / 1.00× /
+      1.10× under DOSBox-X with `cycles=auto`. The asm ports
+      verifiably work (the four `dosbox_aplib_*` correctness gates
+      pass byte-identical at every tier); the gap is in the
+      measurement, not the depacker. DOSBox-X auto-cycles tunes
+      per-cputype throughput, and DOS startup + INT 21h file I/O
+      dominate the 2 s wall-clock. Closing the gate needs either
+      real-iron measurement (86Box / a real 386 or Pentium box) or
+      stub-side INT 1Ah cycle-counter instrumentation so the host
+      harness can subtract DOS overhead. Phase 3 ships the ports
+      and the correctness gates; this perf-gate row is left
+      explicitly unchecked so the user can direct (accept the
+      limitation as-is, instrument, or block Phase 4 on real-iron
+      data). The decision to flag rather than re-tune the asm
+      follows CLAUDE.md's Karpathy guideline ("push back on
+      speculative work") and the working brief, not a literal
+      directive in PLAN.md.
 
 ## Phase 4: chunked extraction, large payloads
 

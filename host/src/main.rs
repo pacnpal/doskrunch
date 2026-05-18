@@ -119,9 +119,9 @@ fn main() -> Result<()> {
         Cmd::ListTargets => {
             println!("8086         shipped (default)");
             println!("286          planned (phase 5)");
-            println!("386          shipped");
+            println!("386          shipped (perf gate pending; see tests/benchmarks/results.md)");
             println!("486          planned (phase 5)");
-            println!("pentium      shipped");
+            println!("pentium      shipped (perf gate pending; see tests/benchmarks/results.md)");
             println!("pentium-mmx  planned (phase 5)");
             println!("p2           planned (phase 5)");
             println!("p3           planned (phase 5)");
