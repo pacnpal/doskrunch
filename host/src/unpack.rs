@@ -198,7 +198,7 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
 fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
     match algo {
         Algorithm::Stored | Algorithm::Aplib => {}
-        Algorithm::Lzsa2 => bail!("aplib host-decode lands in phase 6 for lzsa2"),
+        Algorithm::Lzsa2 => bail!("lzsa2 host-decode lands in phase 6"),
         Algorithm::Lzma => bail!("lzma host-decode lands in phase 5"),
     }
     // Phase 1 hard cap on per-file uncompressed size. The current unpack

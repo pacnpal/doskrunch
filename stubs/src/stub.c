@@ -44,7 +44,12 @@ static u8  g_src[APLIB_SRC_SIZE];
  * (ported from apultra's asm/8088/aplib_8088_small.S). Watcom small-model
  * register-based calling: first arg in SI, second in DI, return in AX. */
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
-#pragma aux aplib_depack parm [si] [di] value [ax] modify [ax bx cx dx bp];
+/* The depacker uses SI/DI as iterators and also trashes BX/CX/DX/BP.
+ * Listing SI/DI explicitly in `modify` keeps the contract here in
+ * lockstep with the asm header's `Trashes:` line (input registers are
+ * caller-saved under Watcom's register-based calling convention, so
+ * this is documentation rather than a code-gen change). */
+#pragma aux aplib_depack parm [si] [di] value [ax] modify [ax bx cx dx si di bp];
 
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
@@ -289,7 +294,7 @@ int main(int argc, char **argv)
             csize = rd_u16(ch_b);
             usize = rd_u16(ch_b + 2);
             if (csize == 0) {
-                if (usize != 0) die("aplib zero csize");
+                if (usize != 0) die("zero csize, nonzero usize");
                 continue;
             }
             if (algo == 0) {

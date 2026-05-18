@@ -15,18 +15,20 @@
 #   make clean
 #
 # Driven by GNU make. The Dockerfile installs make and exports
-# WATCOM/PATH/INCLUDE/EDPATH so `wcl` and `nasm` resolve without
-# further setup.
+# WATCOM/PATH/INCLUDE/EDPATH so `wcc`, `wlink` and `nasm` resolve
+# without further setup.
 
 OUTDIR  := blobs
 SRC     := src
-WCL     := wcl
+WCC     := wcc
+WLINK   := wlink
 NASM    := nasm
 
 # 8086, small model, max size optimization (-os), DOS target, real mode.
-# -zq quiets the banner, -bcl=dos picks the DOS 16-bit target,
-# -ms forces small memory model.
-CFLAGS_8086 := -bcl=dos -0 -ms -os -zq
+# -zq quiets the banner, -bt=dos picks the DOS 16-bit target, -ms forces
+# small memory model. NOTE: `-bt=` is the wcc/wpp target flag; `-bcl=`
+# is the wcl driver flag (different binary, different option syntax).
+WCC_FLAGS_8086 := -bt=dos -0 -ms -os -zq
 
 .PHONY: all clean
 
@@ -35,10 +37,21 @@ all: $(OUTDIR)/aplib_8086.bin
 $(SRC)/aplib_depack_16.obj: $(SRC)/aplib_depack_16.asm
 	$(NASM) -f obj -o $@ $<
 
-$(OUTDIR)/aplib_8086.bin: $(SRC)/stub.c $(SRC)/aplib_depack_16.obj
+# Compile in $(SRC) so wcc deposits `stub.obj` next to the source. wcc
+# without `-fo=` writes <basename>.obj in CWD, which is the cleanest
+# path on Open Watcom v2.
+$(SRC)/stub.obj: $(SRC)/stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_8086) stub.c
+
+# Direct wlink invocation. wlink reads its directive language from
+# the command line: `system dos` picks the DOS-mz output format and
+# pulls in the small-model C runtime; `name` sets the output file;
+# each `file` keyword names an input object.
+$(OUTDIR)/aplib_8086.bin: $(SRC)/stub.obj $(SRC)/aplib_depack_16.obj
 	@mkdir -p $(OUTDIR)
-	$(WCL) $(CFLAGS_8086) -fe=$(OUTDIR)/aplib_8086.exe \
-	  $(SRC)/stub.c $(SRC)/aplib_depack_16.obj
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/aplib_8086.exe \
+	  file $(SRC)/stub.obj file $(SRC)/aplib_depack_16.obj
 	@cp $(OUTDIR)/aplib_8086.exe $(OUTDIR)/aplib_8086.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_8086.bin); \
 	  echo "aplib_8086.bin: $$SZ bytes (target ≤4096, hard ceiling 8192)"; \

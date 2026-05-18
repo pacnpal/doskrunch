@@ -65,7 +65,7 @@ Build fails if a blob exceeds the hard ceiling.
 3. **LZMA** optional, best ratio, **386+ only**. Host rejects `--algo lzma --target 8086|286`.
 4. **stored** always available, no compression. Phase 1 baseline.
 
-Default invocation today (Phase 2): `doskrunch pack out.exe files...` → `--algo aplib --target 8086`. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob.
+Default invocation today (mid-Phase 2): `doskrunch pack out.exe files...` → `--algo stored --target 8086`. The host can already pack `--algo aplib` (with strictly smaller output than stored on the standard fixtures), but the default flip is gated on the Watcom-built `aplib_8086.bin` blob landing. Once it's committed, `--algo` defaults to `aplib` and the same blob handles both algorithms via runtime dispatch on the archive's algorithm byte.
 
 ## Reproducible builds
 

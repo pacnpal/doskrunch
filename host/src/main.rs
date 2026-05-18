@@ -21,10 +21,11 @@ enum Cmd {
         /// Input files (directories not yet supported; lands in phase 4).
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
-        /// Compression algorithm. Default is `aplib`; `stored` remains
-        /// available as a fallback (and as the no-op baseline). LZSA2
-        /// and LZMA land in later phases.
-        #[arg(long, value_enum, default_value_t = AlgoArg::Aplib)]
+        /// Compression algorithm. The default flips to `aplib` once
+        /// the Watcom-built `aplib_8086.bin` blob lands; until then,
+        /// the embedded stub is the Phase 1 stored-only build, so the
+        /// default stays on `stored` to avoid shipping broken SFXes.
+        #[arg(long, value_enum, default_value_t = AlgoArg::Stored)]
         algo: AlgoArg,
         /// CPU target tier for the embedded stub.
         #[arg(long, value_enum, default_value_t = TargetArg::I8086)]
@@ -128,8 +129,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::ListAlgos => {
-            println!("aplib        shipped (default; via vendored apultra)");
-            println!("stored       shipped (fallback / no-op baseline)");
+            println!("stored       shipped (default until aplib stub blob lands)");
+            println!("aplib        shipped (host-side; default flip pending stub blob)");
             println!("lzsa2        planned (phase 6; fast decompression)");
             println!("lzma         planned (phase 5; best ratio, 386+ only)");
             Ok(())

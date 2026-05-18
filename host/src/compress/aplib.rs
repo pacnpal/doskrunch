@@ -7,7 +7,8 @@
 //! is what the 8086 stub's depacker (`stubs/src/aplib_depack_16.asm`,
 //! ported from `vendor/apultra/asm/8088/aplib_8088_small.S`) decodes.
 
-use std::os::raw::{c_int, c_longlong, c_uchar, c_uint};
+use std::ffi::c_void;
+use std::os::raw::{c_longlong, c_uchar, c_uint};
 
 const APULTRA_ERROR: usize = usize::MAX;
 
@@ -23,9 +24,16 @@ extern "C" {
         max_window_size: usize,
         dictionary_size: usize,
         progress: Option<extern "C" fn(c_longlong, c_longlong)>,
-        stats: *mut c_int, // pStats is `apultra_stats *`, but we always pass NULL
+        // C signature is `apultra_stats *`; we always pass NULL so an
+        // opaque pointer is safer than the previous `*mut c_int`,
+        // which would let a future caller write past four bytes into
+        // the C-side struct.
+        stats: *mut c_void,
     ) -> usize;
 
+    // NB: apultra_decompress takes `(size_t nDictionarySize, unsigned int nFlags)`
+    // — flags trails dictionary_size here, whereas `apultra_compress` above puts
+    // `flags` before the window/dictionary sizes. The asymmetry is upstream's.
     fn apultra_decompress(
         input: *const c_uchar,
         output: *mut c_uchar,
