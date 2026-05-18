@@ -7,10 +7,22 @@
 //! is what the 8086 stub's depacker (`stubs/src/aplib_depack_16.asm`,
 //! ported from `vendor/apultra/asm/8088/aplib_8088_small.S`) decodes.
 
-use std::ffi::c_void;
 use std::os::raw::{c_longlong, c_uchar, c_uint};
 
 const APULTRA_ERROR: usize = usize::MAX;
+
+/// Opaque mirror of upstream's `apultra_stats` struct
+/// (`vendor/apultra/src/shrink.h`). Layout is intentionally not
+/// reproduced on the Rust side; we only ever pass NULL, but a typed
+/// pointer carries intent and prevents a future caller from accidentally
+/// passing a `*mut c_int` (or any other wrong-sized pointer) that the C
+/// side would happily clobber. If a caller ever wants stats, they
+/// should re-declare the layout in this module rather than use
+/// `c_void`.
+#[repr(C)]
+pub struct ApultraStats {
+    _private: [u8; 0],
+}
 
 extern "C" {
     fn apultra_get_max_compressed_size(input_size: usize) -> usize;
@@ -24,11 +36,7 @@ extern "C" {
         max_window_size: usize,
         dictionary_size: usize,
         progress: Option<extern "C" fn(c_longlong, c_longlong)>,
-        // C signature is `apultra_stats *`; we always pass NULL so an
-        // opaque pointer is safer than the previous `*mut c_int`,
-        // which would let a future caller write past four bytes into
-        // the C-side struct.
-        stats: *mut c_void,
+        stats: *mut ApultraStats,
     ) -> usize;
 
     // NB: apultra_decompress takes `(size_t nDictionarySize, unsigned int nFlags)`

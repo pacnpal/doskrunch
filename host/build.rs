@@ -41,6 +41,12 @@ fn main() {
     // shouldn't force a full apultra rebuild.
     println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-changed=build.rs");
+    // Cross-compile / toolchain-swap robustness: cc-rs reads these to
+    // decide which compiler and flags to use, so changing them should
+    // force the static archive to be rebuilt.
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CFLAGS");
+    println!("cargo:rerun-if-env-changed=AR");
 
     build.compile("apultra");
 }

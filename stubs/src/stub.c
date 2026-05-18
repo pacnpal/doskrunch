@@ -42,8 +42,13 @@ typedef unsigned long  u32;
 #define APLIB_SRC_SIZE 18464u
 #define TRAILER_SIZE 8u
 
-static u8  g_buf[BUF_SIZE];
+/* `g_src` precedes `g_buf` in BSS so a (hypothetical) aplib decompressor
+ * over-run from `g_buf` lands in zero-init BSS past the end of the data
+ * segment instead of corrupting the live compressed-input buffer that
+ * the depacker is still reading from. Defense-in-depth on top of the
+ * trust-boundary documented near `aplib_depack`'s extern decl. */
 static u8  g_src[APLIB_SRC_SIZE];
+static u8  g_buf[BUF_SIZE];
 
 /* Decompress an aPLib stream pointed to by `src` into `dst`. Returns the
  * decompressed byte count. Implemented in stubs/src/aplib_depack_16.asm
