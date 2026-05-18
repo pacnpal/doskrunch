@@ -31,8 +31,14 @@ typedef unsigned char  u8;
 typedef unsigned short u16;
 typedef unsigned long  u32;
 
+/* IMPORTANT: must match host/src/archive.rs::APLIB_CHUNK_INPUT (16 KiB).
+ * If you bump one, bump the other and verify build_aplib_entry's
+ * compressed-chunk ceiling assertion still holds. */
 #define BUF_SIZE 16384u
-/* Worst-case aPLib expansion on BUF_SIZE bytes: n + n/8 + 16 = 18448. */
+/* Worst-case aPLib expansion on BUF_SIZE bytes: n + n/8 + 16 = 18448.
+ * Producer-side ceiling is enforced by archive.rs::APLIB_MAX_COMPRESSED_CHUNK
+ * which must stay <= APLIB_SRC_SIZE so a host-produced archive can never
+ * trip the runtime `aplib csize` die() on a real DOS box. */
 #define APLIB_SRC_SIZE 18464u
 #define TRAILER_SIZE 8u
 
@@ -293,7 +299,11 @@ int main(int argc, char **argv)
         if (read_exact(self, cc_b, 2) != 0)   die("read cc");
         chunk_count = rd_u16(cc_b);
 
-        if (_dos_creat(namebuf, attrs, &out) != 0) {
+        /* Strip directory (0x10) and volume-label (0x08) bits — the host
+         * always writes 0x20 (archive) so an archive with those bits set
+         * came from a hostile or buggy producer. Keep only the safe
+         * file-attribute subset: archive | system | hidden | read-only. */
+        if (_dos_creat(namebuf, attrs & 0x27, &out) != 0) {
             puts2("doskrunch: cannot create ");
             puts2(namebuf);
             puts2("\r\n");

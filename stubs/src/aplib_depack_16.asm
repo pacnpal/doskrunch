@@ -55,9 +55,16 @@
 ;  ---------------------------------------------------------------------------
 ;  Decompress aPLib data.
 ;
-;  C-side declaration (small model, register-based calling):
-;    unsigned int aplib_depack(const char *src, char *dst);
-;    #pragma aux aplib_depack parm [si] [di] value [ax] modify [bx cx dx bp];
+;  C-side declaration (small model, register-based calling — see the
+;  canonical pragma in stubs/src/stub.c, kept here for reference):
+;    extern unsigned int aplib_depack(const u8 *src, u8 *dst);
+;    #pragma aux aplib_depack "*" parm [si] [di] value [ax] \
+;                                  modify exact [ax bx cx dx si di];
+;  Notes:
+;  * `"*"` keeps the verbatim symbol name (Watcom otherwise appends `_`).
+;  * `modify exact` lists everything the asm trashes EXCEPT bp and es,
+;    which the wrapper preserves (see push/pop pairs below). Listing bp
+;    would force Watcom to also save/restore it pointlessly.
 ;
 ;  inputs:
 ;    ds:si  compressed aPLib stream

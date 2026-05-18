@@ -548,8 +548,18 @@ pub fn read_trailer(tail: &[u8]) -> Result<u32, ArchiveError> {
 /// expansion is roughly `n + n/8 + 16`, so 16 KiB in → ≤18.4 KiB out, which
 /// fits comfortably in the per-chunk u16 `compressed_size` field and lets
 /// the 16-bit stub keep both src and dst scratch buffers in its small-model
-/// data segment (DS ≤ 64 KiB).
+/// data segment (DS ≤ 64 KiB). Must match `BUF_SIZE` in `stubs/src/stub.c`.
 pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
+
+/// Producer-side ceiling on a single aPLib chunk's compressed size. The
+/// 16-bit stub's `g_src` scratch buffer (`APLIB_SRC_SIZE` in
+/// `stubs/src/stub.c`) is sized exactly to this value, so a chunk that
+/// passes this check is guaranteed not to trip the stub's runtime
+/// `die("aplib csize")` on a real DOS box. Without it, producer-side
+/// validation would only catch the much looser u16 overflow (65535) and
+/// a future apultra version with worse-than-expected expansion could
+/// silently emit archives that refuse to extract.
+pub const APLIB_MAX_COMPRESSED_CHUNK: usize = 18_464;
 
 /// Build an aPLib-compressed file entry. Each chunk's uncompressed
 /// payload is bounded by `APLIB_CHUNK_INPUT` so its compressed form
@@ -574,7 +584,10 @@ pub fn build_aplib_entry(
         for c in data.chunks(APLIB_CHUNK_INPUT) {
             let compressed = crate::compress::aplib::compress(c)
                 .map_err(ArchiveError::AplibCompress)?;
-            if compressed.len() > u16::MAX as usize {
+            // Tighter ceiling than u16::MAX: the 16-bit stub's g_src is
+            // exactly APLIB_MAX_COMPRESSED_CHUNK bytes. Refuse here so a
+            // host-produced archive never trips the runtime check on DOS.
+            if compressed.len() > APLIB_MAX_COMPRESSED_CHUNK {
                 return Err(ArchiveError::AplibChunkOverflow {
                     uncompressed: c.len(),
                     compressed: compressed.len(),

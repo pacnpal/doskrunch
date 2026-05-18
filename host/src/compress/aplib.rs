@@ -47,6 +47,13 @@ extern "C" {
 /// Compress `data` with apultra (optimal aPLib). Output is a stock
 /// aPLib stream and can be decoded by any conforming aPLib decoder.
 ///
+/// **Empty input** returns `Ok(Vec::new())` — apultra itself rejects
+/// 0-byte input, and the only in-tree caller (`build_aplib_entry`)
+/// already special-cases empty files so the codec is never reached.
+/// New callers MUST treat this empty `Vec` as "nothing to encode";
+/// passing it to `decompress(&[], expected_size > 0)` will rightfully
+/// fail.
+///
 /// Returns `Err` on any apultra-reported failure — "out of memory" or
 /// "buffer too small" per the upstream contract. The host pipeline is
 /// unlikely to trip these on the chunk sizes we feed it
@@ -55,8 +62,6 @@ extern "C" {
 /// data, so we surface the error instead of panicking.
 pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
     if data.is_empty() {
-        // apultra rejects 0-byte inputs; the caller's empty-chunk path
-        // shouldn't reach the codec, but be defensive.
         return Ok(Vec::new());
     }
     let max_out = unsafe { apultra_get_max_compressed_size(data.len()) };
