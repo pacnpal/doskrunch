@@ -249,12 +249,16 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
-    // Source mtime: 1970-01-01 00:00:00. fat_time::unix_to_fat clamps
-    // to 1980-01-01 00:00:00 and returns a NON-ZERO packed timestamp —
-    // so the stub calls _dos_setftime — but the resulting date is the
-    // earliest representable FAT date. Compare the extracted file's
-    // LOCAL broken-down time to (1980, 1, 1, 0, 0, 0) exactly. The
-    // stub-side wiring is verified end-to-end with no ±24 h slack.
+    // Source mtime: 1979-06-15 17:42:00 UTC — deliberately NOT
+    // Jan 1 / midnight so we actually verify the clamp zeroes
+    // month/day/time as well as the year. fat_time::unix_to_fat
+    // clamps the whole instant to 1980-01-01 00:00:00 and returns a
+    // NON-ZERO packed timestamp — so the stub calls _dos_setftime —
+    // and the extracted file's LOCAL broken-down time must equal
+    // (1980, 1, 1, 0, 0, 0) exactly. A year-only clamp regression in
+    // fat_time would produce (1980, 6, 15, 17, 42, 0) and fail this
+    // gate. The stub-side wiring is verified end-to-end with no ±24 h
+    // slack.
     //
     // The "zero-skip" path on the stub side (`if (dos_date != 0 ||
     // dos_time != 0)`) isn't exercised under --preserve-timestamps
@@ -271,9 +275,11 @@ fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
     let rundir = tempfile::tempdir().expect("create rundir");
     let rundir_path = rundir.path();
 
+    // 1979-06-15 17:42:00 UTC = 298_316_520. Non-Jan-1, non-midnight —
+    // distinguishes a true endpoint clamp from a year-only clamp.
     let src = srcdir.path().join("old.txt");
     fs::write(&src, b"old\n").expect("write source");
-    set_file_mtime(&src, FileTime::from_unix_time(0, 0))
+    set_file_mtime(&src, FileTime::from_unix_time(298_316_520, 0))
         .expect("set source mtime");
 
     let sfx_path = rundir_path.join("OUT.EXE");
