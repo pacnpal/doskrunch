@@ -79,7 +79,16 @@ Headless DOSBox-X gates live in `host/tests/dosbox_*.rs`, each `#[ignore]`-gated
 SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored
 ```
 
-Phase 3 ships four gates: `dosbox_8086` (Phase 1 stored-default smoke test), `dosbox_aplib_8086`, `dosbox_aplib_386`, and `dosbox_aplib_pentium`. Each packs the fixture set with the matching `--target` and `--algo aplib`, runs the SFX under headless DOSBox-X with the matching `cputype=`, and asserts byte-identical extraction. The 500 KiB tier benchmark (`benchmark_tiers`) is also `#[ignore]`-gated and regenerates `tests/benchmarks/results.md` on demand.
+Phase 3 ships four gates:
+
+- `dosbox_8086` — Phase 1 default-algo smoke test. Packs the fixture set with no `--algo` flag, so it exercises whichever algorithm the host currently defaults to (Phase 2+ → `aplib`). Runs under `cputype=8086`.
+- `dosbox_aplib_8086`, `dosbox_aplib_386`, `dosbox_aplib_pentium` — explicit `--algo aplib` packs at the matching `--target`, run under the matching `cputype=`.
+
+Each gate asserts byte-identical extraction. The 500 KiB tier benchmark (`benchmark_tiers`) is also `#[ignore]`-gated but additionally requires the `DOSKRUNCH_RUN_BENCHMARK=1` env var (so the CI `--ignored` run doesn't silently rewrite the committed `tests/benchmarks/results.md`); run it locally with:
+
+```bash
+DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture
+```
 
 ## Phase status
 
