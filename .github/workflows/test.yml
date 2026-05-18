@@ -72,7 +72,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # No --locked: cargo-fuzz doesn't publish a Cargo.lock to crates.io,
+        # so cargo install --locked fails with exit 101 on a clean runner.
+        run: cargo install cargo-fuzz
 
       - name: Cache cargo registry
         uses: actions/cache@v4
