@@ -1,28 +1,26 @@
-//! Stored-path correctness gate across every shipped tier (Phase 3
-//! initially, Phase 5 grew to all eight tiers).
+//! Phase 5 aplib correctness gate across the five new tiers (286, 486,
+//! pentium-mmx, p2, p3). Parallel to the existing per-tier
+//! `dosbox_aplib_{8086,386,pentium}.rs` gates: pack the fixture set
+//! with `--algo aplib --target <tier>`, run under headless DOSBox-X at
+//! the matching `cputype=`, assert byte-identical extraction.
 //!
-//! `host/src/stubs.rs` routes both `Algorithm::Stored` and
-//! `Algorithm::Aplib` to the same per-tier blob, and the stub's main
-//! loop dispatches at runtime on the archive's algorithm byte:
+//! Collapsed into one file (vs five separate per-tier files) because
+//! the surrounding scaffolding is identical and each tier-run is
+//! already self-identifying via the loop's `tier` variable in panic
+//! messages. The original three Phase-3 per-tier files stay around so
+//! their CI history (cputype=8086/386/pentium) remains addressable by
+//! filename for back-compat with prior debugging.
 //!
-//!   * `algo == 0` (stored) — streaming `copy_bytes` through `g_buf`,
-//!     no depacker involved.
-//!   * `algo == 1` (aplib)  — read full compressed chunk into `g_src`,
-//!     call `aplib_depack`, write `g_buf`.
-//!
-//! These are independent code paths. The existing `dosbox_aplib_*`
-//! gates exercise the aplib branch; the Phase 1 `dosbox_8086.rs` smoke
-//! test originally covered stored, but Phase 2 flipped the host's
-//! `--algo` default to aplib, so `dosbox_8086.rs` now also takes the
-//! aplib branch.
-//!
-//! This file fills the gap: explicit `--algo stored` packs for each of
-//! the eight shipped tiers (8086 / 286 / 386 / 486 / pentium /
-//! pentium-mmx / p2 / p3), run under headless DOSBox-X at the matching
-//! `cputype=`, asserting byte-identical extraction. Catches a class of
-//! bug the per-algo gates would otherwise miss — Watcom's `-2` / `-4` /
-//! `-6` codegen for the C housekeeping in the stored branch hasn't been
-//! runtime-verified before Phase 5.
+//! Catches the same class of bug `dosbox_stored_all_tiers.rs` catches
+//! on the stored branch, applied to the aplib branch:
+//!   * `aplib_286.bin` exercises `aplib_depack_16.asm` linked into a
+//!     wcc -2 stub (vs the wcc -0 stub that ships in `aplib_8086.bin`).
+//!   * `aplib_486.bin` exercises `aplib_depack_32.asm` under wcc -4.
+//!   * `aplib_pentium-mmx.bin` / `aplib_p2.bin` / `aplib_p3.bin`
+//!     exercise `aplib_depack_p5.asm` under wcc -5 (pmmx) and wcc -6
+//!     (p2, p3). The p6 codegen for the surrounding C housekeeping is
+//!     the load-bearing difference at p2 / p3 — the depacker .asm is
+//!     `cpu pentium`, a strict subset of P6.
 //!
 //! `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked;
 //! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
@@ -43,33 +41,25 @@ fn fixtures() -> &'static [&'static str] {
 
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
-fn extracts_stored_fixtures_across_all_shipped_tiers() {
+fn extracts_aplib_fixtures_across_new_tiers() {
     let root = repo_root();
     let fixtures_dir = root.join("tests").join("fixtures");
     let inputs: Vec<PathBuf> = fixtures().iter().map(|f| fixtures_dir.join(f)).collect();
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
 
-    // (--target value, DOSBox-X cputype value) per shipped tier. The
-    // two strings differ because DOSBox-X spells some cputypes
-    // differently than our `--target` flag (`pentium_mmx` with an
-    // underscore not a hyphen, `pentium_ii`/`pentium_iii` instead of
-    // `p2`/`p3`). Validated against `dosbox-x 2026.05.02` — DOSBox-X
-    // does NOT accept `pentium_pro` (rejected as invalid); the matching
-    // P6-family cputype is `ppro_slow` for in-order or `pentium_ii` /
-    // `pentium_iii` for the production variants. We pin p2 to
-    // `pentium_ii` so the host's `--target p2` flag matches DOSBox-X's
-    // "Pentium II" spelling.
+    // (--target value, DOSBox-X cputype value) per new tier. Spellings
+    // validated against dosbox-x 2026.05.02; see the comment in
+    // dosbox_stored_all_tiers.rs for the full reasoning around the p2
+    // / p3 names.
     let tiers: &[(&str, &str)] = &[
-        ("8086", "8086"),
         ("286", "286"),
-        ("386", "386"),
         ("486", "486"),
-        ("pentium", "pentium"),
         ("pentium-mmx", "pentium_mmx"),
         ("p2", "pentium_ii"),
         ("p3", "pentium_iii"),
     ];
+
     for (tier, cputype) in tiers {
         let work = tempfile::tempdir().expect("create tempdir");
         let work_path = work.path();
@@ -79,7 +69,7 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             .arg("pack")
             .arg(&sfx_path)
             .args(&inputs)
-            .args(["--algo", "stored", "--target", tier])
+            .args(["--algo", "aplib", "--target", tier])
             .status()
             .expect("spawn doskrunch pack");
         assert!(

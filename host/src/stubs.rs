@@ -2,14 +2,23 @@
 //! commits them to `stubs/blobs/`. We `include_bytes!` them so the host
 //! binary stays a single static artifact.
 //!
-//! Phase 3 ships three blobs, one per CPU target tier:
+//! Phase 5 ships eight aplib blobs (Phase 3 shipped three):
 //!
-//!   * `aplib_8086.bin`   — wcc `-0` + `aplib_depack_16.asm` (8088-safe).
-//!   * `aplib_386.bin`    — wcc `-3` + `aplib_depack_32.asm` (32-bit
-//!     register depacker under bits-16 real mode).
-//!   * `aplib_pentium.bin` — wcc `-5` + `aplib_depack_p5.asm` (speed-
-//!     optimized fast-variant port, no manual U/V scheduling in this
-//!     revision).
+//!   * `aplib_8086.bin`        — wcc `-0` + `aplib_depack_16.asm`.
+//!   * `aplib_286.bin`         — wcc `-2` + `aplib_depack_16.asm` (the
+//!     16-bit depacker is `cpu 8086`, a strict subset of 286).
+//!   * `aplib_386.bin`         — wcc `-3` + `aplib_depack_32.asm`.
+//!   * `aplib_486.bin`         — wcc `-4` + `aplib_depack_32.asm` (the
+//!     32-bit depacker is `cpu 386`, a strict subset of 486).
+//!   * `aplib_pentium.bin`     — wcc `-5` + `aplib_depack_p5.asm`.
+//!   * `aplib_pentium-mmx.bin` — wcc `-5` + `aplib_depack_p5.asm`. MMX-
+//!     accelerated depacker copy paths are deferred (see stubs/Makefile
+//!     and PLAN.md §10 Phase 5 Verify); the blob exists today so the
+//!     host can dispatch on --target pentium-mmx and so a future swap
+//!     to an MMX depacker can land without changing this table.
+//!   * `aplib_p2.bin`          — wcc `-6` + `aplib_depack_p5.asm`.
+//!   * `aplib_p3.bin`          — wcc `-6` + `aplib_depack_p5.asm`. SSE
+//!     copy paths likewise deferred.
 //!
 //! Each blob is a complete Watcom-built DOS .EXE that dispatches at
 //! runtime on the archive's algorithm byte and handles both `stored`
@@ -17,31 +26,37 @@
 //! both `Algorithm::Stored` and `Algorithm::Aplib` on the requested
 //! `--target` tier.
 //!
-//! Tiers `286`, `486`, `pentium-mmx`, `p2`, `p3` and the `lzsa2` /
-//! `lzma` algorithms remain Phase 5/6 work; `stub_for` returns the
-//! same "not shipped" error for them as in Phase 2.
+//! LZMA stubs (`lzma_<tier>.bin` for 386..p3) land later in Phase 5 —
+//! they are NOT unified with the aplib blob via runtime dispatch because
+//! their working-set footprint (LZMA range decoder + dict buffer)
+//! blows past the aplib stub's small-model BSS budget.
 
 use crate::archive::{Algorithm, TargetTier};
 
 const APLIB_8086: &[u8] = include_bytes!("../../stubs/blobs/aplib_8086.bin");
+const APLIB_286: &[u8] = include_bytes!("../../stubs/blobs/aplib_286.bin");
 const APLIB_386: &[u8] = include_bytes!("../../stubs/blobs/aplib_386.bin");
+const APLIB_486: &[u8] = include_bytes!("../../stubs/blobs/aplib_486.bin");
 const APLIB_PENTIUM: &[u8] = include_bytes!("../../stubs/blobs/aplib_pentium.bin");
+const APLIB_PENTIUM_MMX: &[u8] = include_bytes!("../../stubs/blobs/aplib_pentium-mmx.bin");
+const APLIB_P2: &[u8] = include_bytes!("../../stubs/blobs/aplib_p2.bin");
+const APLIB_P3: &[u8] = include_bytes!("../../stubs/blobs/aplib_p3.bin");
 
 /// Returns the prebuilt stub blob for the given (algorithm, tier), or an
 /// error if the combination isn't shipped yet.
 pub fn stub_for(algo: Algorithm, target: TargetTier) -> Result<&'static [u8], String> {
     match (algo, target) {
-        (Algorithm::Stored, TargetTier::I8086) | (Algorithm::Aplib, TargetTier::I8086) => {
-            Ok(APLIB_8086)
-        }
-        (Algorithm::Stored, TargetTier::I386) | (Algorithm::Aplib, TargetTier::I386) => {
-            Ok(APLIB_386)
-        }
-        (Algorithm::Stored, TargetTier::Pentium) | (Algorithm::Aplib, TargetTier::Pentium) => {
-            Ok(APLIB_PENTIUM)
-        }
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I8086) => Ok(APLIB_8086),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I286) => Ok(APLIB_286),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I386) => Ok(APLIB_386),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I486) => Ok(APLIB_486),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::Pentium) => Ok(APLIB_PENTIUM),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::PentiumMmx) => Ok(APLIB_PENTIUM_MMX),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::P2) => Ok(APLIB_P2),
+        (Algorithm::Stored | Algorithm::Aplib, TargetTier::P3) => Ok(APLIB_P3),
         (a, t) => Err(format!(
-            "no prebuilt stub for ({}, {}); shipped tiers in this phase: (stored|aplib, 8086|386|pentium)",
+            "no prebuilt stub for ({}, {}); shipped in this build: \
+             (stored|aplib, 8086|286|386|486|pentium|pentium-mmx|p2|p3)",
             a.name(),
             t.name()
         )),
