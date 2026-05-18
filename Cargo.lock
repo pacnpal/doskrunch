@@ -151,6 +151,7 @@ dependencies = [
  "crc32fast",
  "filetime",
  "flate2",
+ "libc",
  "tempfile",
 ]
 

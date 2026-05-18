@@ -114,12 +114,23 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // any dedupe so we can reorder deterministically.
     let mut prelim: Vec<(String, PathBuf, fs::Metadata)> = Vec::with_capacity(expanded.len());
     for src in &expanded {
-        let meta = fs::metadata(src)
+        // `symlink_metadata` (not `fs::metadata`) so a TOCTOU race where
+        // something replaces a walked file with a symlink between
+        // expand_inputs and this stat is caught here — we documented
+        // "symlinks not followed" as a hard boundary in the CLI help, so
+        // honour that even under concurrent modification of the input
+        // tree. A real attacker still has a tiny window before
+        // `fs::read` below, but using symlink_metadata closes the
+        // larger one.
+        let meta = fs::symlink_metadata(src)
             .with_context(|| format!("stat {}", src.display()))?;
+        if meta.file_type().is_symlink() {
+            bail!(
+                "{}: replaced by a symlink between walk and stat (TOCTOU); refusing to follow",
+                src.display()
+            );
+        }
         if !meta.is_file() {
-            // `expand_inputs` already filtered to regular files; this is
-            // defense against a TOCTOU race where something replaced the
-            // path with a directory between the walk and the stat.
             bail!("{}: no longer a regular file", src.display());
         }
         let src_name = src
@@ -476,28 +487,44 @@ mod tests {
         assert!(expanded.contains(&real));
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_propagates_read_dir_iteration_errors() {
         // We can't easily fault-inject mid-iteration, but we can prove
         // the unreadable-directory case bails instead of returning an
-        // empty list. Only check on Unix where chmod is reliable.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let td = tempfile::tempdir().unwrap();
-            let src = td.path().join("noaccess");
-            fs::create_dir(&src).unwrap();
-            make_input(&src, "real.txt", b"keep");
-            // Drop the read bit; opendir() now returns EACCES.
-            let mut perms = fs::metadata(&src).unwrap().permissions();
-            perms.set_mode(0o000);
-            fs::set_permissions(&src, perms).unwrap();
-            let err = expand_inputs(&[src.clone()], None).err();
-            // Restore so the tempdir cleanup works.
+        // empty list. Skip on root because root can read chmod 000
+        // dirs and the assertion would spuriously fail; CI containers
+        // often run as root.
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("noaccess");
+        fs::create_dir(&src).unwrap();
+        make_input(&src, "real.txt", b"keep");
+        let mut perms = fs::metadata(&src).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&src, perms).unwrap();
+
+        // Probe: if read_dir still succeeds (root, or filesystem
+        // ignores chmod), this test can't validate the error-bubbling
+        // path on this platform. Restore perms and skip.
+        let probe = fs::read_dir(&src).map(|_| ()).err();
+        if probe.is_none() {
             let mut perms = fs::metadata(&src).unwrap().permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&src, perms).unwrap();
-            assert!(err.is_some(), "EACCES on read_dir must bail the pack");
+            eprintln!(
+                "walk_propagates_read_dir_iteration_errors: \
+                 read_dir on chmod-000 dir still succeeded (likely root); \
+                 skipping the assertion"
+            );
+            return;
         }
+
+        let err = expand_inputs(&[src.clone()], None).err();
+        // Restore so the tempdir cleanup works regardless of the result.
+        let mut perms = fs::metadata(&src).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&src, perms).unwrap();
+        assert!(err.is_some(), "EACCES on read_dir must bail the pack");
     }
 }

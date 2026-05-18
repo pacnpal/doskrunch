@@ -11,16 +11,19 @@
 //!
 //! Two cases:
 //!   1. A known, fixed source mtime (deliberately *not* "now") round-
-//!      trips through pack → DOSBox-X → host fs::metadata, truncated
-//!      to FAT 2-second resolution. Setting a fixed mtime via
-//!      `filetime::set_file_mtime` (rather than relying on the test
-//!      machine's current wall-clock) keeps the comparison stable
-//!      across reruns and across CI host clocks.
+//!      trips through pack → DOSBox-X → host fs::metadata. Comparison
+//!      is on the LOCAL broken-down components (year/month/day/
+//!      hour/min/sec÷2), not on raw Unix-epoch seconds: DOS interprets
+//!      FAT dates as LOCAL with no timezone concept, so the extracted
+//!      file's Unix mtime is shifted by the host's local-time offset.
+//!      Decomposing via `libc::localtime_r` lets us assert exact
+//!      equality on the FAT components while tolerating any
+//!      world timezone.
 //!   2. A pre-1980 source mtime is clamped by `fat_time::unix_to_fat`
-//!      to the 1980-01-01 FAT epoch endpoint — i.e. a non-zero
-//!      timestamp that the stub WILL `_dos_setftime` to. The extracted
-//!      file should land near 1980-01-01 on disk, NOT the host's
-//!      wall-clock-now; this defends the clamp end-to-end against
+//!      to the 1980-01-01 FAT epoch endpoint — a non-zero timestamp
+//!      that the stub WILL `_dos_setftime` to. The extracted file's
+//!      LOCAL broken-down components should be exactly
+//!      (1980, 1, 1, 0, 0, 0) — defends the clamp end-to-end against
 //!      regressions in either `fat_time` or the stub's per-file
 //!      timestamp wiring.
 //!
@@ -32,12 +35,17 @@
 //! filesystem and accidentally pass without actually verifying what
 //! the stub wrote.
 //!
-//! `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked;
-//! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
+//! Unix-only: `libc::localtime_r` is the lowest-friction way to get
+//! LOCAL broken-down components; the DOSBox-X tests are unix-only in
+//! practice anyway. `#[ignore]`-gated so contributors without
+//! `dosbox-x` aren't blocked; runs in CI's `dosbox-x-integration`
+//! job via `cargo test -- --ignored`.
+
+#![cfg(unix)]
 
 use std::fs;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use filetime::{set_file_mtime, FileTime};
 
@@ -54,6 +62,53 @@ const DOSBOX_TIMEOUT: Duration = Duration::from_secs(120);
 /// unit test pins, so a regression in fat_time would also fail this
 /// gate. 1715862896 % 2 == 0, so no FAT truncation slop either.
 const PINNED_MTIME_SECS: i64 = 1_715_862_896;
+
+/// LOCAL broken-down components, mirroring `struct tm` minus the
+/// fields we don't compare (wday, yday, isdst, gmtoff, zone).
+#[derive(Debug, PartialEq, Eq)]
+struct LocalParts {
+    year: i32,
+    month: u32, // 1..=12
+    day: u32,
+    hour: u32,
+    min: u32,
+    sec: u32,
+}
+
+/// Decompose a Unix-epoch second count into local broken-down time
+/// via libc's reentrant localtime_r. Returns None if libc rejects
+/// the value (overflow on time_t platforms with 32-bit time_t).
+fn local_parts(unix_secs: i64) -> Option<LocalParts> {
+    let t: libc::time_t = unix_secs.try_into().ok()?;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::localtime_r(&t, &mut tm) };
+    if ok.is_null() {
+        return None;
+    }
+    Some(LocalParts {
+        year: tm.tm_year + 1900,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        hour: tm.tm_hour as u32,
+        min: tm.tm_min as u32,
+        sec: tm.tm_sec as u32,
+    })
+}
+
+/// Pull out the (year, month, day, hour, min, sec) components from a
+/// FAT-packed `(dos_date << 16) | dos_time`. Matches the encoding in
+/// `host/src/fat_time.rs::unix_to_fat`.
+fn fat_parts(fat_packed: u32) -> LocalParts {
+    let dos_date = (fat_packed >> 16) as u16;
+    let dos_time = (fat_packed & 0xFFFF) as u16;
+    let year = (dos_date >> 9) as i32 + 1980;
+    let month = ((dos_date >> 5) & 0x0F) as u32;
+    let day = (dos_date & 0x1F) as u32;
+    let hour = (dos_time >> 11) as u32;
+    let min = ((dos_time >> 5) & 0x3F) as u32;
+    let sec = ((dos_time & 0x1F) as u32) * 2;
+    LocalParts { year, month, day, hour, min, sec }
+}
 
 /// One run of `dosbox-x` against the SFX in `rundir_path`, panicking on
 /// timeout/non-zero exit. Caller is responsible for laying out the
@@ -112,18 +167,12 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
     //      confirm the stored per-file timestamp equals
     //      `unix_to_fat(PINNED_MTIME_SECS)`. This is the exact-bytes
     //      gate that the host wrote what we asked it to.
-    //   2. Stub-side: pack → run under DOSBox-X → re-stat the
-    //      extracted file. DOS interprets FAT dates as LOCAL time
-    //      (no timezone concept), but most host filesystems return
-    //      mtimes as UTC Unix-epoch seconds. The result is that the
-    //      extracted mtime is shifted by the host's local-time
-    //      offset (e.g. ±14400 s on UTC-4). The strict-equality
-    //      check on Unix seconds therefore can't be portable across
-    //      runner timezones — instead we assert the round-trip
-    //      landed within ±24 h of the pinned source, which excludes
-    //      every meaningful failure (FAT date garbage, stub overrun,
-    //      `_dos_setftime` skipped, wrong year) while tolerating any
-    //      world timezone.
+    //   2. Stub-side: pack → run under DOSBox-X → decompose the
+    //      extracted file's mtime into LOCAL broken-down components
+    //      and compare them exactly to the FAT components the host
+    //      wrote into the archive. This catches off-by-day, wrong-
+    //      time-of-day, or lost-FAT-2s-truncation regressions that a
+    //      coarse "within 24 h" check would miss.
     //
     // Source file lives in `srcdir`, OUTSIDE the DOSBox-X mount, so
     // the case-insensitive lookup below can't accidentally match the
@@ -148,8 +197,6 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
         .expect("spawn doskrunch pack");
     assert!(status.success(), "pack failed: {status:?}");
 
-    // Pack-side check: the archive's timestamp field is exactly the
-    // FAT-encoded pinned mtime. No DOSBox-X involved.
     let archive = doskrunch::unpack::load_archive(&sfx_path)
         .expect("load archive for inspect");
     let entry = archive
@@ -157,18 +204,22 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
         .iter()
         .find(|f| f.display_name().eq_ignore_ascii_case("STAMPED.TXT"))
         .expect("STAMPED.TXT in archive");
-    let want_fat = doskrunch::fat_time::unix_to_fat(PINNED_MTIME_SECS);
+    let want_fat_packed = doskrunch::fat_time::unix_to_fat(PINNED_MTIME_SECS);
     assert_eq!(
-        entry.timestamp, want_fat,
+        entry.timestamp, want_fat_packed,
         "archive timestamp {:#010x} doesn't match expected FAT-encoded \
          pinned mtime {:#010x}",
-        entry.timestamp, want_fat
+        entry.timestamp, want_fat_packed
     );
 
-    // Stub-side check: round-trip the SFX through DOSBox-X and verify
-    // the extracted file's mtime is near (±24 h, see above) the pinned
-    // value. A regression that removes the `_dos_setftime` call would
-    // leave the file dated "now" and fail this slack check.
+    // Stub-side check: round-trip through DOSBox-X, then assert the
+    // extracted file's LOCAL broken-down time matches the FAT
+    // components the host wrote, exactly. DOS treats the on-disk FAT
+    // date as wall-clock with no timezone concept; on a unix host the
+    // filesystem stores the resulting instant as Unix-epoch UTC. To
+    // recover the original FAT components, decompose the extracted
+    // mtime back into LOCAL time via libc::localtime_r and compare
+    // component-by-component.
     let conf_path = rundir_path.join("dosbox.conf");
     write_dosbox_conf(&conf_path, rundir_path);
     run_dosbox(rundir_path, &conf_path, "pinned-mtime");
@@ -184,13 +235,14 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
         .expect("post-epoch")
         .as_secs() as i64;
 
-    let delta = (got_unix - PINNED_MTIME_SECS).abs();
-    assert!(
-        delta <= 24 * 3600,
-        "extracted mtime {got_unix} (diff {} from now) is more than 24 h \
-         away from pinned source {PINNED_MTIME_SECS}; \
-         delta {delta}s — stub side may have skipped `_dos_setftime`",
-        diff_from_now(got_unix),
+    let got_local = local_parts(got_unix)
+        .expect("decompose extracted mtime via localtime_r");
+    let want_local = fat_parts(want_fat_packed);
+
+    assert_eq!(
+        got_local, want_local,
+        "extracted LOCAL broken-down time doesn't match expected FAT components \
+         (extracted_unix={got_unix})",
     );
 }
 
@@ -198,13 +250,11 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
     // Source mtime: 1970-01-01 00:00:00. fat_time::unix_to_fat clamps
-    // to 1980 and returns a NON-ZERO packed timestamp — so the stub
-    // calls _dos_setftime — but the resulting date (1980-01-01) is
-    // the earliest representable FAT date. What we're actually
-    // verifying here is that the extracted file is dated near
-    // 1980-01-01 (the clamp endpoint), NOT the host's current
-    // wall-clock — i.e. the pack-side clamp is wired through to the
-    // stub side correctly.
+    // to 1980-01-01 00:00:00 and returns a NON-ZERO packed timestamp —
+    // so the stub calls _dos_setftime — but the resulting date is the
+    // earliest representable FAT date. Compare the extracted file's
+    // LOCAL broken-down time to (1980, 1, 1, 0, 0, 0) exactly. The
+    // stub-side wiring is verified end-to-end with no ±24 h slack.
     //
     // The "zero-skip" path on the stub side (`if (dos_date != 0 ||
     // dos_time != 0)`) isn't exercised under --preserve-timestamps
@@ -252,27 +302,19 @@ fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
         .expect("post-epoch")
         .as_secs() as i64;
 
-    // 1980-01-01 00:00:00 UTC = 315532800 seconds since the unix
-    // epoch. fat_time clamps anything earlier to that exact value
-    // (see fat_time::tests::epoch_clamps_to_1980). DOSBox-X writes
-    // through to the host filesystem at LOCAL time, so the extracted
-    // mtime can be offset from 315532800 by the host's UTC-offset
-    // (in seconds). Allow ±24h slack to absorb timezone differences
-    // between CI runners.
-    const FAT_EPOCH_UNIX: i64 = 315_532_800;
-    let delta = (got_unix - FAT_EPOCH_UNIX).abs();
-    assert!(
-        delta <= 24 * 3600,
-        "expected extracted mtime near 1980-01-01 ({FAT_EPOCH_UNIX}), got {got_unix} \
-         (delta {delta}s); pre-1980 clamp path may be broken",
+    let got_local = local_parts(got_unix)
+        .expect("decompose extracted mtime via localtime_r");
+    let want_local = LocalParts {
+        year: 1980,
+        month: 1,
+        day: 1,
+        hour: 0,
+        min: 0,
+        sec: 0,
+    };
+    assert_eq!(
+        got_local, want_local,
+        "extracted LOCAL broken-down time doesn't match the FAT epoch endpoint \
+         (extracted_unix={got_unix}); pre-1980 clamp path may be broken",
     );
-}
-
-fn diff_from_now(unix_secs: i64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let d = now - unix_secs;
-    format!("{d}s")
 }
