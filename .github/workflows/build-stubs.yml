@@ -1,0 +1,42 @@
+name: build-stubs
+
+on:
+  push:
+    paths:
+      - "stubs/src/**"
+      - "stubs/Makefile"
+      - "stubs/Dockerfile"
+      - ".github/workflows/build-stubs.yml"
+  pull_request:
+    paths:
+      - "stubs/src/**"
+      - "stubs/Makefile"
+      - "stubs/Dockerfile"
+      - ".github/workflows/build-stubs.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Watcom container
+        run: docker build -t doskrunch-watcom stubs/
+
+      - name: Build stub blobs
+        run: docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom make all
+
+      - name: Verify committed blob matches the rebuild
+        run: |
+          # If anything under stubs/blobs/ drifted, fail so the PR author
+          # is forced to commit the rebuild. include_bytes! in the Rust
+          # host pins us to the on-disk copy.
+          git diff --exit-code -- stubs/blobs/
+
+      - name: Upload stub blobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: stubs-blobs
+          path: stubs/blobs/*.bin
+          if-no-files-found: error

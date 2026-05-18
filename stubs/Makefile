@@ -27,7 +27,7 @@ CFLAGS_8086 := -bcl=dos -0 -ms -os -zq -I$(SRC)
 
 all: $(OUTDIR)/stored_8086.bin
 
-$(OUTDIR)/stored_8086.bin: $(SRC)/stub.c $(SRC)/dos.h
+$(OUTDIR)/stored_8086.bin: $(SRC)/stub.c
 	@mkdir -p $(OUTDIR)
 	$(WCL) $(CFLAGS_8086) -fe=$(OUTDIR)/stored_8086.exe $(SRC)/stub.c
 	@cp $(OUTDIR)/stored_8086.exe $(OUTDIR)/stored_8086.bin

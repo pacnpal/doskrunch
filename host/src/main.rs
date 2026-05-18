@@ -3,13 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-mod archive;
-mod fat_time;
-mod inspect;
-mod name83;
-mod pack;
-mod stubs;
-mod unpack;
+use doskrunch::{archive, inspect, pack, unpack};
 
 #[derive(Parser)]
 #[command(name = "doskrunch", about = "Build self-extracting DOS .EXE archives.")]
