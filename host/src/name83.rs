@@ -41,10 +41,7 @@ fn sanitize_part(s: &str, max: usize) -> String {
 /// `true` if it differs from a clean uppercase of the source.
 pub fn mangle(src: &str) -> (String, bool) {
     let p = Path::new(src);
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("UNNAMED");
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("UNNAMED");
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
     let stem83 = sanitize_part(stem, 8);
     let ext83 = sanitize_part(ext, 3);

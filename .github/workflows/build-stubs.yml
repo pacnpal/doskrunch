@@ -17,6 +17,12 @@ on:
       - ".github/workflows/build-stubs.yml"
   workflow_dispatch:
 
+# Principle of least privilege: GITHUB_TOKEN gets read-only access to
+# the repo (enough for actions/checkout). Artifacts use the
+# upload-artifact action's own ephemeral storage, not Packages.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

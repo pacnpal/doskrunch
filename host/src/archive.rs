@@ -145,11 +145,7 @@ impl FileEntry {
         self.chunks.iter().map(|c| c.data.len() as u32).sum()
     }
     pub fn display_name(&self) -> String {
-        let name = self
-            .name
-            .split(|b| *b == 0)
-            .next()
-            .unwrap_or(&self.name);
+        let name = self.name.split(|b| *b == 0).next().unwrap_or(&self.name);
         String::from_utf8_lossy(name).into_owned()
     }
 }
@@ -267,10 +263,8 @@ impl Archive {
             TargetTier::from_u8(hdr_rest[2]).ok_or(ArchiveError::UnknownTarget(hdr_rest[2]))?;
         let flags = u16::from_le_bytes([hdr_rest[3], hdr_rest[4]]);
         let file_count = u16::from_le_bytes([hdr_rest[5], hdr_rest[6]]);
-        let _total_u =
-            u32::from_le_bytes([hdr_rest[7], hdr_rest[8], hdr_rest[9], hdr_rest[10]]);
-        let total_c =
-            u32::from_le_bytes([hdr_rest[11], hdr_rest[12], hdr_rest[13], hdr_rest[14]]);
+        let _total_u = u32::from_le_bytes([hdr_rest[7], hdr_rest[8], hdr_rest[9], hdr_rest[10]]);
+        let total_c = u32::from_le_bytes([hdr_rest[11], hdr_rest[12], hdr_rest[13], hdr_rest[14]]);
         let run_after_offset = u16::from_le_bytes([hdr_rest[15], hdr_rest[16]]);
 
         // Bound parse-time allocations to the archive's own declared
@@ -298,11 +292,7 @@ impl Archive {
 }
 
 fn write_file<W: Write>(w: &mut W, f: &FileEntry) -> io::Result<()> {
-    let name_len: u8 = f
-        .name
-        .len()
-        .try_into()
-        .expect("name longer than 255 bytes");
+    let name_len: u8 = f.name.len().try_into().expect("name longer than 255 bytes");
     w.write_all(&[name_len])?;
     w.write_all(&f.name)?;
     w.write_all(&[f.attrs])?;
@@ -510,9 +500,9 @@ fn validate_archive_name(name: &[u8]) -> Result<(), ArchiveError> {
     // DOS reserved device basenames. Compare on the upper-ASCII stem
     // (everything before the first dot), matching the unpack-side check.
     const DOS_RESERVED: &[&[u8]] = &[
-        b"CON", b"PRN", b"AUX", b"NUL",
-        b"COM1", b"COM2", b"COM3", b"COM4", b"COM5", b"COM6", b"COM7", b"COM8", b"COM9",
-        b"LPT1", b"LPT2", b"LPT3", b"LPT4", b"LPT5", b"LPT6", b"LPT7", b"LPT8", b"LPT9",
+        b"CON", b"PRN", b"AUX", b"NUL", b"COM1", b"COM2", b"COM3", b"COM4", b"COM5", b"COM6",
+        b"COM7", b"COM8", b"COM9", b"LPT1", b"LPT2", b"LPT3", b"LPT4", b"LPT5", b"LPT6", b"LPT7",
+        b"LPT8", b"LPT9",
     ];
     let stem_lower = body.split(|&b| b == b'.').next().unwrap_or(body);
     let stem_upper: Vec<u8> = stem_lower.iter().map(|b| b.to_ascii_uppercase()).collect();
@@ -550,9 +540,11 @@ pub fn read_trailer(tail: &[u8]) -> Result<u32, ArchiveError> {
 /// the 16-bit stub keep both src and dst scratch buffers in its small-model
 /// data segment (DS ≤ 64 KiB). Must match `BUF_SIZE` in `stubs/src/stub.c`.
 ///
-/// This is the *maximum* — callers may pick smaller via `--chunk-size`
-/// to trade a tiny bit of compression ratio for smaller per-chunk RAM,
-/// but the stub's BSS budget is the hard ceiling.
+/// This is the *maximum* — callers may pick smaller via `--chunk-size`.
+/// The stub's `g_src` / `g_buf` BSS buffers are fixed-size at compile
+/// time (`APLIB_SRC_SIZE` + `BUF_SIZE`), so smaller chunks do NOT
+/// reduce the stub's resident RAM; they only change the archive layout
+/// and the actual bytes processed per chunk on disk.
 pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
 
 /// Producer-side ceiling on a single aPLib chunk's compressed size. The
@@ -584,6 +576,13 @@ pub fn build_aplib_entry(
             max: APLIB_CHUNK_INPUT,
         });
     }
+    // Reject upfront if the file would need > u16::MAX chunks at this
+    // chunk_size, so a pathological `--chunk-size 1 some-big-file`
+    // doesn't compress tens of thousands of chunks before failing.
+    let projected = data.len().div_ceil(chunk_size.max(1));
+    if projected > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(projected));
+    }
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
@@ -595,8 +594,8 @@ pub fn build_aplib_entry(
     } else {
         let mut out = Vec::with_capacity(data.len().div_ceil(chunk_size));
         for c in data.chunks(chunk_size) {
-            let compressed = crate::compress::aplib::compress(c)
-                .map_err(ArchiveError::AplibCompress)?;
+            let compressed =
+                crate::compress::aplib::compress(c).map_err(ArchiveError::AplibCompress)?;
             // Tighter ceiling than u16::MAX: the 16-bit stub's g_src is
             // exactly APLIB_MAX_COMPRESSED_CHUNK bytes. Refuse here so a
             // host-produced archive never trips the runtime check on DOS.
@@ -645,6 +644,13 @@ pub fn build_stored_entry(
             max: u16::MAX as usize,
         });
     }
+    // Symmetric early-out to build_aplib_entry: refuse a chunk_size
+    // that would project past u16::MAX chunks before allocating any
+    // Chunk vector.
+    let projected = data.len().div_ceil(chunk_size.max(1));
+    if projected > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(projected));
+    }
     let crc = crc32fast::hash(data);
     let mut name = name_8_3.as_bytes().to_vec();
     name.push(0);
@@ -682,11 +688,17 @@ pub enum ArchiveError {
     UnsupportedVersion(u8),
     UnknownAlgorithm(u8),
     UnknownTarget(u8),
-    HeaderCrcMismatch { expected: u32, actual: u32 },
+    HeaderCrcMismatch {
+        expected: u32,
+        actual: u32,
+    },
     EmptyFileName,
     InvalidName(String, &'static str),
     TooManyChunks(usize),
-    ArchiveTooLarge { declared: u64, kind: &'static str },
+    ArchiveTooLarge {
+        declared: u64,
+        kind: &'static str,
+    },
     SizeOverflow,
     SizeMismatch {
         file: String,
@@ -801,7 +813,11 @@ mod tests {
         let data: Vec<u8> = (0..200_000u32).map(|i| (i & 0xff) as u8).collect();
         let entry = build_stored_entry("BIG.BIN", 0x20, 0, &data, STORED_TEST_CHUNK).unwrap();
         assert!(entry.chunks.len() >= 4, "should split into multiple chunks");
-        let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
+        let total: u32 = entry
+            .chunks
+            .iter()
+            .map(|c| c.uncompressed_size as u32)
+            .sum();
         assert_eq!(total as usize, data.len());
         roundtrip(vec![entry]);
     }
@@ -833,7 +849,11 @@ mod tests {
         let entry = build_aplib_entry("HELLO.TXT", 0x20, 0, &data, APLIB_CHUNK_INPUT).unwrap();
         // Compressed should be strictly smaller than uncompressed for a repetitive input.
         let csz: usize = entry.chunks.iter().map(|c| c.data.len()).sum();
-        assert!(csz < data.len(), "expected compression: csz={csz} usz={}", data.len());
+        assert!(
+            csz < data.len(),
+            "expected compression: csz={csz} usz={}",
+            data.len()
+        );
         assert_eq!(entry.uncompressed_size() as usize, data.len());
         aplib_roundtrip(vec![entry]);
     }
@@ -853,7 +873,11 @@ mod tests {
             .collect();
         let entry = build_aplib_entry("BIG.BIN", 0x20, 0, &data, APLIB_CHUNK_INPUT).unwrap();
         assert!(entry.chunks.len() >= 2, "should split into multiple chunks");
-        let total: u32 = entry.chunks.iter().map(|c| c.uncompressed_size as u32).sum();
+        let total: u32 = entry
+            .chunks
+            .iter()
+            .map(|c| c.uncompressed_size as u32)
+            .sum();
         assert_eq!(total as usize, data.len());
         aplib_roundtrip(vec![entry]);
     }
@@ -925,7 +949,10 @@ mod tests {
             name: vec![b'A', 0xC3, 0xA9, 0],
             attrs: 0x20,
             timestamp: 0,
-            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            chunks: vec![Chunk {
+                uncompressed_size: 0,
+                data: Vec::new(),
+            }],
             crc32: crc32fast::hash(&[]),
         }];
         let mut buf = Vec::new();
@@ -943,7 +970,10 @@ mod tests {
             name: b"AAAAAAAAA\0".to_vec(),
             attrs: 0x20,
             timestamp: 0,
-            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            chunks: vec![Chunk {
+                uncompressed_size: 0,
+                data: Vec::new(),
+            }],
             crc32: crc32fast::hash(&[]),
         }];
         let mut buf = Vec::new();
@@ -955,20 +985,31 @@ mod tests {
 
     #[test]
     fn rejects_path_separator_in_name() {
-        for bad in [&b"../etc\0"[..], &b"a/b\0"[..], &b"a\\b\0"[..], &b"a:b\0"[..]] {
+        for bad in [
+            &b"../etc\0"[..],
+            &b"a/b\0"[..],
+            &b"a\\b\0"[..],
+            &b"a:b\0"[..],
+        ] {
             let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
             a.files = vec![FileEntry {
                 name: bad.to_vec(),
                 attrs: 0x20,
                 timestamp: 0,
-                chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+                chunks: vec![Chunk {
+                    uncompressed_size: 0,
+                    data: Vec::new(),
+                }],
                 crc32: crc32fast::hash(&[]),
             }];
             let mut buf = Vec::new();
             a.write(&mut buf).unwrap();
             let mut r = std::io::Cursor::new(&buf);
             let err = Archive::read(&mut r).unwrap_err();
-            assert!(matches!(err, ArchiveError::InvalidName(_, _)), "expected InvalidName for {bad:?}, got {err:?}");
+            assert!(
+                matches!(err, ArchiveError::InvalidName(_, _)),
+                "expected InvalidName for {bad:?}, got {err:?}"
+            );
         }
     }
 
@@ -989,7 +1030,10 @@ mod tests {
                 name: bad.to_vec(),
                 attrs: 0x20,
                 timestamp: 0,
-                chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+                chunks: vec![Chunk {
+                    uncompressed_size: 0,
+                    data: Vec::new(),
+                }],
                 crc32: crc32fast::hash(&[]),
             }];
             let mut buf = Vec::new();
@@ -1011,14 +1055,20 @@ mod tests {
             name: vec![b'A', 0x7f, b'.', b'T', b'X', b'T', 0],
             attrs: 0x20,
             timestamp: 0,
-            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            chunks: vec![Chunk {
+                uncompressed_size: 0,
+                data: Vec::new(),
+            }],
             crc32: crc32fast::hash(&[]),
         }];
         let mut buf = Vec::new();
         a.write(&mut buf).unwrap();
         let mut r = std::io::Cursor::new(&buf);
         let err = Archive::read(&mut r).unwrap_err();
-        assert!(matches!(err, ArchiveError::InvalidName(_, _)), "got {err:?}");
+        assert!(
+            matches!(err, ArchiveError::InvalidName(_, _)),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1028,7 +1078,10 @@ mod tests {
             name: b"NONUL".to_vec(),
             attrs: 0x20,
             timestamp: 0,
-            chunks: vec![Chunk { uncompressed_size: 0, data: Vec::new() }],
+            chunks: vec![Chunk {
+                uncompressed_size: 0,
+                data: Vec::new(),
+            }],
             crc32: crc32fast::hash(&[]),
         }];
         let mut buf = Vec::new();
@@ -1068,7 +1121,10 @@ mod tests {
         // (no data — parser should bail before reading)
         let mut r = std::io::Cursor::new(&buf);
         let err = Archive::read(&mut r).unwrap_err();
-        assert!(matches!(err, ArchiveError::ArchiveTooLarge { .. }), "got {err:?}");
+        assert!(
+            matches!(err, ArchiveError::ArchiveTooLarge { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

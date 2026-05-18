@@ -80,11 +80,10 @@ fn synthesize_payload() -> Vec<u8> {
             }
         }
         // 256 bytes of zeros
-        for _ in 0..256 {
-            out.push(0);
-            if out.len() == PAYLOAD_SIZE {
-                return out;
-            }
+        let zeros_take = (PAYLOAD_SIZE - out.len()).min(256);
+        out.resize(out.len() + zeros_take, 0);
+        if out.len() == PAYLOAD_SIZE {
+            return out;
         }
         // 256 bytes of pseudo-random
         for _ in 0..256 {
@@ -124,9 +123,7 @@ fn benchmark_tier_decompression() {
     // silently rewrite the committed results.md file. Local devs opt
     // in by setting the env var; everyone else gets a fast skip.
     if std::env::var_os("DOSKRUNCH_RUN_BENCHMARK").is_none() {
-        eprintln!(
-            "benchmark_tier_decompression: skipped (set DOSKRUNCH_RUN_BENCHMARK=1 to run)"
-        );
+        eprintln!("benchmark_tier_decompression: skipped (set DOSKRUNCH_RUN_BENCHMARK=1 to run)");
         return;
     }
 
@@ -144,11 +141,7 @@ fn benchmark_tier_decompression() {
     fs::write(&payload_path, &payload).expect("write payload");
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
-    let tiers: &[(&str, &str)] = &[
-        ("8086", "8086"),
-        ("386", "386"),
-        ("pentium", "pentium"),
-    ];
+    let tiers: &[(&str, &str)] = &[("8086", "8086"), ("386", "386"), ("pentium", "pentium")];
 
     let mut results: Vec<TierResult> = Vec::new();
     for (tier, cputype) in tiers {
@@ -288,10 +281,12 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
         payload.len() / 1024,
         payload.len(),
     ));
-    md.push_str("Measurement: end-to-end SFX wall-clock under headless DOSBox-X with `cycles=auto`, \
+    md.push_str(
+        "Measurement: end-to-end SFX wall-clock under headless DOSBox-X with `cycles=auto`, \
         min across 3 runs per tier. The benchmark is `#[ignore]`-gated AND env-var-gated \
         (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this \
-        file. Run locally with:\n\n");
+        file. Run locally with:\n\n",
+    );
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
     md.push_str("| Tier | cputype | SFX size (bytes) | Wall clock min (ms) | Ratio vs 8086 |\n");
     md.push_str("|------|---------|------------------|----------------------|----------------|\n");
@@ -349,4 +344,3 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
 }
-

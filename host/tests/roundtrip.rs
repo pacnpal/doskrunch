@@ -39,11 +39,7 @@ fn pack_then_unpack_is_byte_identical() {
     assert!(status.success(), "pack failed");
 
     let mut unpack = doskrunch();
-    unpack
-        .arg("unpack")
-        .arg(&exe)
-        .arg("-d")
-        .arg(&extracted);
+    unpack.arg("unpack").arg(&exe).arg("-d").arg(&extracted);
     let status = unpack.status().unwrap();
     assert!(status.success(), "unpack failed");
 
@@ -51,8 +47,8 @@ fn pack_then_unpack_is_byte_identical() {
         let name = src.file_name().unwrap().to_str().unwrap().to_uppercase();
         let dst = extracted.join(&name);
         let original = std::fs::read(src).unwrap();
-        let actual = std::fs::read(&dst)
-            .unwrap_or_else(|e| panic!("missing {}: {}", dst.display(), e));
+        let actual =
+            std::fs::read(&dst).unwrap_or_else(|e| panic!("missing {}: {}", dst.display(), e));
         assert_eq!(original, actual, "content mismatch for {name}");
     }
 }
@@ -101,7 +97,10 @@ fn pack_output_independent_of_argv_order() {
     }
     let ba = std::fs::read(&a).unwrap();
     let bb = std::fs::read(&b).unwrap();
-    assert_eq!(ba, bb, "argv order should not affect reproducible-mode output");
+    assert_eq!(
+        ba, bb,
+        "argv order should not affect reproducible-mode output"
+    );
 }
 
 #[test]
@@ -131,11 +130,7 @@ fn pack_walks_directory_recursively() {
 
     let extracted = tmp.path().join("out");
     let mut unpack = doskrunch();
-    unpack
-        .arg("unpack")
-        .arg(&exe)
-        .arg("-d")
-        .arg(&extracted);
+    unpack.arg("unpack").arg(&exe).arg("-d").arg(&extracted);
     let status = unpack.status().unwrap();
     assert!(status.success(), "unpack failed");
 
@@ -189,10 +184,14 @@ fn chunk_size_flag_respected_end_to_end() {
 
     let exe = tmp.path().join("small.exe");
     let mut pack = doskrunch();
-    pack.arg("pack")
-        .arg(&exe)
-        .arg(&src)
-        .args(["--algo", "aplib", "--target", "8086", "--chunk-size", "4096"]);
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "aplib",
+        "--target",
+        "8086",
+        "--chunk-size",
+        "4096",
+    ]);
     let status = pack.status().unwrap();
     assert!(status.success(), "pack with --chunk-size failed");
 
@@ -222,16 +221,67 @@ fn chunk_size_flag_respected_end_to_end() {
 }
 
 #[test]
+fn stored_max_chunk_size_roundtrips_via_host_unpack() {
+    // Stored allows `--chunk-size` up to u16::MAX (65535), which is
+    // larger than the stub's BUF_SIZE=16384 copy buffer. The stub's
+    // copy_bytes() loop streams a chunk through that buffer in
+    // BUF_SIZE-sized reads, so a 65535-byte chunk takes 4 reads
+    // (16384 + 16384 + 16384 + 16383). Verify the host-side encode
+    // emits the requested chunk size and that a roundtrip through
+    // the host's unpack reconstructs the bytes — the matching
+    // stub-side copy_bytes path is already exercised end-to-end by
+    // the 2 MB / 500 KiB aplib DOSBox-X gates (same loop, same
+    // BUF_SIZE; the algorithm dispatch only differs in whether the
+    // bytes flow through aplib_depack first).
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("payload.bin");
+    let bytes: Vec<u8> = (0..200_000u32).map(|i| (i & 0xff) as u8).collect();
+    std::fs::write(&src, &bytes).unwrap();
+
+    let exe = tmp.path().join("stored_big.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "stored",
+        "--target",
+        "8086",
+        "--chunk-size",
+        "65535",
+    ]);
+    assert!(pack.status().unwrap().success(), "pack failed");
+
+    let archive = doskrunch::unpack::load_archive(&exe).expect("load archive");
+    assert_eq!(archive.files.len(), 1);
+    let entry = &archive.files[0];
+    // 200_000 bytes / 65535 = 4 chunks (3 × 65535 + 1 × 3395).
+    assert_eq!(entry.chunks.len(), 4);
+    for c in entry.chunks.iter().take(3) {
+        assert_eq!(c.uncompressed_size, 65535, "first 3 chunks at max size");
+    }
+
+    let extracted = tmp.path().join("out");
+    let mut unpack = doskrunch();
+    unpack.arg("unpack").arg(&exe).arg("-d").arg(&extracted);
+    assert!(unpack.status().unwrap().success(), "unpack failed");
+    let got = std::fs::read(extracted.join("PAYLOAD.BIN")).unwrap();
+    assert_eq!(got, bytes, "stored 65535-byte-chunk roundtrip mismatch");
+}
+
+#[test]
 fn chunk_size_above_stub_budget_for_aplib_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("a.bin");
     std::fs::write(&src, b"x").unwrap();
     let exe = tmp.path().join("o.exe");
     let mut pack = doskrunch();
-    pack.arg("pack")
-        .arg(&exe)
-        .arg(&src)
-        .args(["--algo", "aplib", "--target", "8086", "--chunk-size", "65535"]);
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "aplib",
+        "--target",
+        "8086",
+        "--chunk-size",
+        "65535",
+    ]);
     let out = pack.output().unwrap();
     assert!(!out.status.success(), "should reject oversize chunk_size");
     let stderr = String::from_utf8_lossy(&out.stderr);

@@ -42,11 +42,10 @@ fn synthesize_payload() -> Vec<u8> {
                 return out;
             }
         }
-        for _ in 0..256 {
-            out.push(0);
-            if out.len() == PAYLOAD_SIZE {
-                return out;
-            }
+        let zeros_take = (PAYLOAD_SIZE - out.len()).min(256);
+        out.resize(out.len() + zeros_take, 0);
+        if out.len() == PAYLOAD_SIZE {
+            return out;
         }
         for _ in 0..256 {
             lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -92,7 +91,10 @@ fn extracts_500kib_multichunk_payload_across_tiers() {
             .args(["--algo", "aplib", "--target", tier])
             .status()
             .expect("spawn doskrunch pack");
-        assert!(status.success(), "doskrunch pack failed for tier {tier}: {status:?}");
+        assert!(
+            status.success(),
+            "doskrunch pack failed for tier {tier}: {status:?}"
+        );
 
         let conf_path = rundir_path.join("dosbox.conf");
         fs::write(
@@ -131,9 +133,9 @@ fn extracts_500kib_multichunk_payload_across_tiers() {
             Err(WaitError::Timeout) => panic!(
                 "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (tier {tier}); child was killed"
             ),
-            Err(WaitError::Wait(e)) => panic!(
-                "waiting on dosbox-x failed: {e} (tier {tier}); child was killed"
-            ),
+            Err(WaitError::Wait(e)) => {
+                panic!("waiting on dosbox-x failed: {e} (tier {tier}); child was killed")
+            }
         };
         assert!(
             dosbox_status.success(),
@@ -155,4 +157,3 @@ fn extracts_500kib_multichunk_payload_across_tiers() {
         );
     }
 }
-

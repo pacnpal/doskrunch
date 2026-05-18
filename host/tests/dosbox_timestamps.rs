@@ -79,7 +79,10 @@ struct LocalParts {
 /// via libc's reentrant localtime_r. Returns None if libc rejects
 /// the value (overflow on time_t platforms with 32-bit time_t).
 fn local_parts(unix_secs: i64) -> Option<LocalParts> {
-    let t: libc::time_t = unix_secs.try_into().ok()?;
+    // libc::time_t is i64 on every unix target Rust supports in 2026
+    // (32-bit time_t platforms are extinct from the std targets list);
+    // a plain cast is safe and avoids clippy's useless_conversion lint.
+    let t: libc::time_t = unix_secs as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let ok = unsafe { libc::localtime_r(&t, &mut tm) };
     if ok.is_null() {
@@ -95,19 +98,31 @@ fn local_parts(unix_secs: i64) -> Option<LocalParts> {
     })
 }
 
-/// Pull out the (year, month, day, hour, min, sec) components from a
-/// FAT-packed `(dos_date << 16) | dos_time`. Matches the encoding in
-/// `host/src/fat_time.rs::unix_to_fat`.
-fn fat_parts(fat_packed: u32) -> LocalParts {
-    let dos_date = (fat_packed >> 16) as u16;
-    let dos_time = (fat_packed & 0xFFFF) as u16;
-    let year = (dos_date >> 9) as i32 + 1980;
-    let month = ((dos_date >> 5) & 0x0F) as u32;
-    let day = (dos_date & 0x1F) as u32;
-    let hour = (dos_time >> 11) as u32;
-    let min = ((dos_time >> 5) & 0x3F) as u32;
-    let sec = ((dos_time & 0x1F) as u32) * 2;
-    LocalParts { year, month, day, hour, min, sec }
+/// Decompose a Unix-epoch second count into UTC broken-down time via
+/// libc's reentrant gmtime_r. Used to derive the expected LOCAL
+/// components of the extracted file independently of `unix_to_fat`:
+/// because DOS treats FAT timestamps as LOCAL (no timezone concept)
+/// and `unix_to_fat` decomposes UTC unconditionally, a round-trip that
+/// preserves the source mtime correctly should land with the
+/// extracted file's LOCAL components equal to the SOURCE's UTC
+/// components. Using gmtime_r as the oracle catches a pack-side bug
+/// that accidentally applies a timezone shift (which would still
+/// agree with `fat_parts(unix_to_fat(...))`).
+fn utc_parts(unix_secs: i64) -> Option<LocalParts> {
+    let t: libc::time_t = unix_secs as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::gmtime_r(&t, &mut tm) };
+    if ok.is_null() {
+        return None;
+    }
+    Some(LocalParts {
+        year: tm.tm_year + 1900,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        hour: tm.tm_hour as u32,
+        min: tm.tm_min as u32,
+        sec: tm.tm_sec as u32,
+    })
 }
 
 /// One run of `dosbox-x` against the SFX in `rundir_path`, panicking on
@@ -125,14 +140,17 @@ fn run_dosbox(rundir_path: &std::path::Path, conf_path: &std::path::Path, tag: &
         .expect("spawn dosbox-x");
     let status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
         Ok(s) => s,
-        Err(WaitError::Timeout) => panic!(
-            "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} ({tag}); child was killed"
-        ),
-        Err(WaitError::Wait(e)) => panic!(
-            "waiting on dosbox-x failed: {e} ({tag}); child was killed"
-        ),
+        Err(WaitError::Timeout) => {
+            panic!("dosbox-x did not exit within {DOSBOX_TIMEOUT:?} ({tag}); child was killed")
+        }
+        Err(WaitError::Wait(e)) => {
+            panic!("waiting on dosbox-x failed: {e} ({tag}); child was killed")
+        }
     };
-    assert!(status.success(), "dosbox-x exited non-zero ({tag}): {status:?}");
+    assert!(
+        status.success(),
+        "dosbox-x exited non-zero ({tag}): {status:?}"
+    );
 }
 
 fn write_dosbox_conf(path: &std::path::Path, mount: &std::path::Path) {
@@ -183,8 +201,7 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 
     let src = srcdir.path().join("stamped.txt");
     fs::write(&src, b"stamped content\n").expect("write source");
-    set_file_mtime(&src, FileTime::from_unix_time(PINNED_MTIME_SECS, 0))
-        .expect("set source mtime");
+    set_file_mtime(&src, FileTime::from_unix_time(PINNED_MTIME_SECS, 0)).expect("set source mtime");
 
     let sfx_path = rundir_path.join("OUT.EXE");
     let bin = env!("CARGO_BIN_EXE_doskrunch");
@@ -192,13 +209,18 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
         .arg("pack")
         .arg(&sfx_path)
         .arg(&src)
-        .args(["--algo", "aplib", "--target", "8086", "--preserve-timestamps"])
+        .args([
+            "--algo",
+            "aplib",
+            "--target",
+            "8086",
+            "--preserve-timestamps",
+        ])
         .status()
         .expect("spawn doskrunch pack");
     assert!(status.success(), "pack failed: {status:?}");
 
-    let archive = doskrunch::unpack::load_archive(&sfx_path)
-        .expect("load archive for inspect");
+    let archive = doskrunch::unpack::load_archive(&sfx_path).expect("load archive for inspect");
     let entry = archive
         .files
         .iter()
@@ -213,19 +235,22 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
     );
 
     // Stub-side check: round-trip through DOSBox-X, then assert the
-    // extracted file's LOCAL broken-down time matches the FAT
-    // components the host wrote, exactly. DOS treats the on-disk FAT
-    // date as wall-clock with no timezone concept; on a unix host the
-    // filesystem stores the resulting instant as Unix-epoch UTC. To
-    // recover the original FAT components, decompose the extracted
-    // mtime back into LOCAL time via libc::localtime_r and compare
-    // component-by-component.
+    // extracted file's LOCAL broken-down time matches an INDEPENDENT
+    // oracle: the SOURCE mtime's UTC broken-down components (via
+    // libc::gmtime_r). The end-to-end invariant is that DOS treats
+    // FAT timestamps as LOCAL with no timezone concept, and pack-side
+    // unix_to_fat decomposes the source mtime as UTC; therefore an
+    // unshifted round-trip lands with extracted LOCAL == source UTC.
+    // Using gmtime_r as the oracle (not fat_parts(unix_to_fat(...)))
+    // means a pack-side bug that accidentally applies a TZ shift
+    // would be caught here — the archive's stored value would agree
+    // with the shifted oracle but disagree with the unshifted one.
     let conf_path = rundir_path.join("dosbox.conf");
     write_dosbox_conf(&conf_path, rundir_path);
     run_dosbox(rundir_path, &conf_path, "pinned-mtime");
 
-    let extracted = locate_case_insensitive(rundir_path, "STAMPED.TXT")
-        .expect("missing STAMPED.TXT");
+    let extracted =
+        locate_case_insensitive(rundir_path, "STAMPED.TXT").expect("missing STAMPED.TXT");
     let got_mtime = fs::metadata(&extracted)
         .expect("stat extracted")
         .modified()
@@ -235,20 +260,23 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
         .expect("post-epoch")
         .as_secs() as i64;
 
-    let got_local = local_parts(got_unix)
-        .expect("decompose extracted mtime via localtime_r");
-    let want_local = fat_parts(want_fat_packed);
+    let got_local = local_parts(got_unix).expect("decompose extracted mtime via localtime_r");
+    // Independent oracle: decompose the SOURCE mtime as UTC. Not
+    // routed through unix_to_fat / fat_parts, so a shift bug there
+    // can't make the assertion tautological.
+    let want_local =
+        utc_parts(PINNED_MTIME_SECS).expect("decompose source mtime as UTC via gmtime_r");
 
     assert_eq!(
         got_local, want_local,
-        "extracted LOCAL broken-down time doesn't match expected FAT components \
+        "extracted LOCAL broken-down time doesn't match source UTC components \
          (extracted_unix={got_unix})",
     );
 }
 
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
-fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
+fn pre_1980_source_mtime_clamps_exactly_to_fat_epoch_endpoint() {
     // Source mtime: 1979-06-15 17:42:00 UTC — deliberately NOT
     // Jan 1 / midnight so we actually verify the clamp zeroes
     // month/day/time as well as the year. fat_time::unix_to_fat
@@ -279,8 +307,7 @@ fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
     // distinguishes a true endpoint clamp from a year-only clamp.
     let src = srcdir.path().join("old.txt");
     fs::write(&src, b"old\n").expect("write source");
-    set_file_mtime(&src, FileTime::from_unix_time(298_316_520, 0))
-        .expect("set source mtime");
+    set_file_mtime(&src, FileTime::from_unix_time(298_316_520, 0)).expect("set source mtime");
 
     let sfx_path = rundir_path.join("OUT.EXE");
     let bin = env!("CARGO_BIN_EXE_doskrunch");
@@ -288,7 +315,13 @@ fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
         .arg("pack")
         .arg(&sfx_path)
         .arg(&src)
-        .args(["--algo", "aplib", "--target", "8086", "--preserve-timestamps"])
+        .args([
+            "--algo",
+            "aplib",
+            "--target",
+            "8086",
+            "--preserve-timestamps",
+        ])
         .status()
         .expect("spawn doskrunch pack");
     assert!(status.success(), "pack failed: {status:?}");
@@ -297,8 +330,7 @@ fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
     write_dosbox_conf(&conf_path, rundir_path);
     run_dosbox(rundir_path, &conf_path, "pre-1980-mtime");
 
-    let extracted = locate_case_insensitive(rundir_path, "OLD.TXT")
-        .expect("missing OLD.TXT");
+    let extracted = locate_case_insensitive(rundir_path, "OLD.TXT").expect("missing OLD.TXT");
     let got_mtime = fs::metadata(&extracted)
         .expect("stat extracted")
         .modified()
@@ -308,8 +340,7 @@ fn pre_1980_source_mtime_lands_near_fat_epoch_endpoint() {
         .expect("post-epoch")
         .as_secs() as i64;
 
-    let got_local = local_parts(got_unix)
-        .expect("decompose extracted mtime via localtime_r");
+    let got_local = local_parts(got_unix).expect("decompose extracted mtime via localtime_r");
     let want_local = LocalParts {
         year: 1980,
         month: 1,

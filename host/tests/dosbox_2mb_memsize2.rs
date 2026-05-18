@@ -68,11 +68,10 @@ fn synthesize_payload() -> Vec<u8> {
                 return out;
             }
         }
-        for _ in 0..256 {
-            out.push(0);
-            if out.len() == PAYLOAD_SIZE {
-                return out;
-            }
+        let zeros_take = (PAYLOAD_SIZE - out.len()).min(256);
+        out.resize(out.len() + zeros_take, 0);
+        if out.len() == PAYLOAD_SIZE {
+            return out;
         }
         for _ in 0..256 {
             lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -118,7 +117,10 @@ fn extracts_2mib_payload_under_memsize2_no_xms_ems() {
             .args(["--algo", "aplib", "--target", tier])
             .status()
             .expect("spawn doskrunch pack");
-        assert!(status.success(), "doskrunch pack failed for tier {tier}: {status:?}");
+        assert!(
+            status.success(),
+            "doskrunch pack failed for tier {tier}: {status:?}"
+        );
 
         // memsize=2 gives ~620 KiB conventional after DOS overhead.
         // xms/ems/umb=false stops DOSBox-X from quietly setting up
@@ -167,9 +169,9 @@ fn extracts_2mib_payload_under_memsize2_no_xms_ems() {
             Err(WaitError::Timeout) => panic!(
                 "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (tier {tier}); child was killed"
             ),
-            Err(WaitError::Wait(e)) => panic!(
-                "waiting on dosbox-x failed: {e} (tier {tier}); child was killed"
-            ),
+            Err(WaitError::Wait(e)) => {
+                panic!("waiting on dosbox-x failed: {e} (tier {tier}); child was killed")
+            }
         };
         assert!(
             dosbox_status.success(),
@@ -181,9 +183,6 @@ fn extracts_2mib_payload_under_memsize2_no_xms_ems() {
         let body = fs::read(&extracted)
             .unwrap_or_else(|e| panic!("read extracted payload (tier {tier}): {e}"));
         assert_eq!(body.len(), payload.len(), "size mismatch tier {tier}");
-        assert!(
-            body == payload,
-            "byte mismatch on tier {tier} at memsize=2"
-        );
+        assert!(body == payload, "byte mismatch on tier {tier} at memsize=2");
     }
 }

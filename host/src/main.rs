@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use doskrunch::{archive, inspect, pack, unpack};
 use doskrunch::archive::APLIB_CHUNK_INPUT;
+use doskrunch::{archive, inspect, pack, unpack};
 
 #[derive(Parser)]
 #[command(name = "doskrunch", about = "Build self-extracting DOS .EXE archives.")]

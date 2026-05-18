@@ -81,9 +81,9 @@ fn extracts_aplib_fixtures_under_8086_cputype() {
         .expect("spawn dosbox-x (is it installed?)");
     let dosbox_status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
         Ok(status) => status,
-        Err(WaitError::Timeout) => panic!(
-            "dosbox-x did not exit within {DOSBOX_TIMEOUT:?}; child was killed"
-        ),
+        Err(WaitError::Timeout) => {
+            panic!("dosbox-x did not exit within {DOSBOX_TIMEOUT:?}; child was killed")
+        }
         Err(WaitError::Wait(e)) => panic!("waiting on dosbox-x failed: {e}; child was killed"),
     };
     assert!(
@@ -100,11 +100,11 @@ fn extracts_aplib_fixtures_under_8086_cputype() {
         let body = fs::read(&extracted)
             .unwrap_or_else(|e| panic!("read extracted {}: {e}", extracted.display()));
         assert_eq!(
-            body, original,
+            body,
+            original,
             "extracted {} differs from fixture {}",
             extracted.display(),
             fixture
         );
     }
 }
-

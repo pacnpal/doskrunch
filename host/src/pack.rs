@@ -34,9 +34,9 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     match opts.algorithm {
         Algorithm::Stored | Algorithm::Aplib => {}
         Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
-        Algorithm::Lzma => bail!(
-            "algorithm 'lzma' lands in phase 5 (and will require --target 386+ when enabled)"
-        ),
+        Algorithm::Lzma => {
+            bail!("algorithm 'lzma' lands in phase 5 (and will require --target 386+ when enabled)")
+        }
     }
 
     // The CLI layer enforces the same ceiling; assert here so library
@@ -57,8 +57,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         );
     }
 
-    let stub = stub_for(opts.algorithm, opts.target)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let stub = stub_for(opts.algorithm, opts.target).map_err(|e| anyhow::anyhow!(e))?;
     if stub.len() < 2 || &stub[..2] != b"MZ" {
         bail!(
             "embedded stub blob for ({}, {}) is not a DOS .EXE (missing MZ magic) — \
@@ -122,8 +121,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         // tree. A real attacker still has a tiny window before
         // `fs::read` below, but using symlink_metadata closes the
         // larger one.
-        let meta = fs::symlink_metadata(src)
-            .with_context(|| format!("stat {}", src.display()))?;
+        let meta = fs::symlink_metadata(src).with_context(|| format!("stat {}", src.display()))?;
         if meta.file_type().is_symlink() {
             bail!(
                 "{}: replaced by a symlink between walk and stat (TOCTOU); refusing to follow",
@@ -160,10 +158,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     let mut used: HashSet<String> = HashSet::new();
     let mut entries: Vec<(String, PathBuf, fs::Metadata)> = Vec::with_capacity(prelim.len());
     for (mangled, src, meta) in prelim {
-        let src_name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let src_name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let final_name = dedupe(&mangled, &used).with_context(|| {
             format!(
                 "{}: exhausted the ~1..~9999 suffix space for stem '{}'",
@@ -253,13 +248,21 @@ fn expand_inputs(inputs: &[PathBuf], exclude: Option<&Path>) -> Result<Vec<PathB
         // `symlink_metadata` so a symlinked top-level input is skipped
         // rather than silently dereferenced. Matches walk-time symlink
         // handling; documented behaviour in pack's CLI help.
-        let meta = fs::symlink_metadata(top)
-            .with_context(|| format!("stat {}", top.display()))?;
+        let meta = fs::symlink_metadata(top).with_context(|| format!("stat {}", top.display()))?;
         if meta.file_type().is_symlink() {
             continue;
         }
+        // Top-level input matching the output path is a clear user
+        // error (asking us to read what we're about to overwrite).
+        // Bail loudly rather than silently dropping it — the silent
+        // exclusion is reserved for files discovered during a
+        // directory walk where the user reasonably expected the
+        // walker to skip the output file.
         if matches_exclude(top, exclude) {
-            continue;
+            bail!(
+                "{}: input path is the same file as the output (--output); refusing to pack the output into itself",
+                top.display()
+            );
         }
         if meta.is_file() {
             out.push(top.clone());
@@ -289,8 +292,8 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, exclude: Option<&Path>) -> Resul
         if matches_exclude(&path, exclude) {
             continue;
         }
-        let meta = fs::symlink_metadata(&path)
-            .with_context(|| format!("stat {}", path.display()))?;
+        let meta =
+            fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         let ft = meta.file_type();
         if ft.is_symlink() {
             // Skip silently — most workflows have stray symlinks and
@@ -330,9 +333,8 @@ fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
 /// upper-ASCII stem (everything before the first dot).
 fn is_dos_reserved(mangled: &str) -> bool {
     const DOS_RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     let stem = mangled.split('.').next().unwrap_or(mangled);
     DOS_RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
@@ -348,10 +350,7 @@ fn write_sfx(out: &Path, stub: &[u8], archive: &Archive) -> Result<()> {
     // DOS lseek is signed 32-bit, so the stub can't reach past 2 GiB
     // even though the archive header's u32 fields could express more.
     if total > i32::MAX as u64 {
-        bail!(
-            "output .EXE is {} bytes; DOS lseek caps at 2 GiB",
-            total
-        );
+        bail!("output .EXE is {} bytes; DOS lseek caps at 2 GiB", total);
     }
     f.sync_all()?;
     Ok(())
@@ -435,7 +434,7 @@ mod tests {
         let b = make_input(&src.join("sub"), "b.txt", b"bravo");
         let c = make_input(&src.join("sub"), "c.txt", b"charlie");
 
-        let expanded = expand_inputs(&[src.clone()], None).unwrap();
+        let expanded = expand_inputs(std::slice::from_ref(&src), None).unwrap();
         // expand_inputs preserves walk order (sorted per directory).
         assert_eq!(expanded.len(), 3);
         assert!(expanded.contains(&a));
@@ -453,7 +452,7 @@ mod tests {
         let target = src.join("real.txt");
         let link = src.join("link.txt");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let expanded = expand_inputs(&[src.clone()], None).unwrap();
+        let expanded = expand_inputs(std::slice::from_ref(&src), None).unwrap();
         assert_eq!(expanded.len(), 1, "symlink should be skipped");
     }
 
@@ -482,9 +481,23 @@ mod tests {
         let out = src.join("OUT.EXE");
         fs::write(&out, b"\x4d\x5afakeexe").unwrap();
         let out_canonical = fs::canonicalize(&out).unwrap();
-        let expanded = expand_inputs(&[src.clone()], Some(&out_canonical)).unwrap();
+        let expanded = expand_inputs(std::slice::from_ref(&src), Some(&out_canonical)).unwrap();
         assert_eq!(expanded.len(), 1, "previous OUT.EXE must be skipped");
         assert!(expanded.contains(&real));
+    }
+
+    #[test]
+    fn pack_bails_when_top_level_input_is_the_output() {
+        // Top-level input identical to the output path is a clear
+        // user error (asking us to read what we're about to
+        // overwrite). Bail loudly — silent drop is for files
+        // discovered during a walk, not for files the user named.
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("OUT.EXE");
+        fs::write(&out, b"\x4d\x5afakeexe").unwrap();
+        let out_canonical = fs::canonicalize(&out).unwrap();
+        let err = expand_inputs(std::slice::from_ref(&out), Some(&out_canonical)).unwrap_err();
+        assert!(err.to_string().contains("output into itself"), "got: {err}");
     }
 
     #[cfg(unix)]
@@ -520,7 +533,7 @@ mod tests {
             return;
         }
 
-        let err = expand_inputs(&[src.clone()], None).err();
+        let err = expand_inputs(std::slice::from_ref(&src), None).err();
         // Restore so the tempdir cleanup works regardless of the result.
         let mut perms = fs::metadata(&src).unwrap().permissions();
         perms.set_mode(0o755);

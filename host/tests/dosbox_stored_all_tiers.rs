@@ -60,7 +60,10 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             .args(["--algo", "stored", "--target", tier])
             .status()
             .expect("spawn doskrunch pack");
-        assert!(status.success(), "doskrunch pack failed for tier {tier}: {status:?}");
+        assert!(
+            status.success(),
+            "doskrunch pack failed for tier {tier}: {status:?}"
+        );
 
         let conf_path = work_path.join("dosbox.conf");
         fs::write(
@@ -99,9 +102,9 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             Err(WaitError::Timeout) => panic!(
                 "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (tier {tier}); child was killed"
             ),
-            Err(WaitError::Wait(e)) => panic!(
-                "waiting on dosbox-x failed: {e} (tier {tier}); child was killed"
-            ),
+            Err(WaitError::Wait(e)) => {
+                panic!("waiting on dosbox-x failed: {e} (tier {tier}); child was killed")
+            }
         };
         assert!(
             dosbox_status.success(),
@@ -112,14 +115,16 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
             let original = fs::read(fixtures_dir.join(fixture))
                 .unwrap_or_else(|e| panic!("read fixture {fixture}: {e}"));
             let extracted_name = fixture.to_ascii_uppercase();
-            let extracted = locate_case_insensitive(work_path, &extracted_name)
-                .unwrap_or_else(|| panic!(
-                    "missing extracted file {extracted_name} on tier {tier}"
-                ));
-            let body = fs::read(&extracted)
-                .unwrap_or_else(|e| panic!("read extracted {} (tier {tier}): {e}", extracted.display()));
+            let extracted =
+                locate_case_insensitive(work_path, &extracted_name).unwrap_or_else(|| {
+                    panic!("missing extracted file {extracted_name} on tier {tier}")
+                });
+            let body = fs::read(&extracted).unwrap_or_else(|e| {
+                panic!("read extracted {} (tier {tier}): {e}", extracted.display())
+            });
             assert_eq!(
-                body, original,
+                body,
+                original,
                 "tier {tier}: extracted {} differs from fixture {}",
                 extracted.display(),
                 fixture
@@ -127,4 +132,3 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
         }
     }
 }
-

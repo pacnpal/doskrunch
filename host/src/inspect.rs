@@ -40,7 +40,10 @@ pub fn inspect(opts: InspectOptions) -> Result<()> {
     };
     println!("ratio        : {:.2}% of original", ratio);
     println!();
-    println!("{:<14}  {:>10}  {:>10}  {:>10}", "name", "usize", "csize", "crc32");
+    println!(
+        "{:<14}  {:>10}  {:>10}  {:>10}",
+        "name", "usize", "csize", "crc32"
+    );
     for f in &archive.files {
         println!(
             "{:<14}  {:>10}  {:>10}  {:08x}",

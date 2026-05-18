@@ -169,7 +169,12 @@ mod tests {
             input.extend_from_slice(b"the quick brown fox jumps over the lazy dog\n");
         }
         let c = compress(&input).unwrap();
-        assert!(c.len() < input.len(), "compressed {} >= input {}", c.len(), input.len());
+        assert!(
+            c.len() < input.len(),
+            "compressed {} >= input {}",
+            c.len(),
+            input.len()
+        );
         let d = decompress(&c, input.len()).unwrap();
         assert_eq!(d, input);
     }

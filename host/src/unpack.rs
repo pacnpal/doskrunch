@@ -13,8 +13,7 @@ pub struct UnpackOptions {
 
 pub fn unpack(opts: UnpackOptions) -> Result<()> {
     let archive = load_archive(&opts.input)?;
-    fs::create_dir_all(&opts.dest)
-        .with_context(|| format!("create {}", opts.dest.display()))?;
+    fs::create_dir_all(&opts.dest).with_context(|| format!("create {}", opts.dest.display()))?;
 
     // Track collisions case-insensitively so two entries differing only
     // by case can't silently overwrite each other on Windows/macOS.
@@ -59,7 +58,10 @@ fn safe_basename(name: &str) -> Result<&str> {
             // characters (`* ? " < > | / \ :`).
             b'.' => {}
             b if crate::name83::ILLEGAL.contains(&b) => {
-                bail!("archive entry name '{}' contains an illegal FAT 8.3 character", name)
+                bail!(
+                    "archive entry name '{}' contains an illegal FAT 8.3 character",
+                    name
+                )
             }
             _ => {}
         }
@@ -79,9 +81,8 @@ fn safe_basename(name: &str) -> Result<&str> {
     // to a device instead of a file. Compare on the stem before the
     // first dot, case-insensitively, after trimming trailing dots/spaces.
     const RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     let trimmed = name.trim_end_matches(['.', ' ']);
     let stem = trimmed.split('.').next().unwrap_or(trimmed);
@@ -91,65 +92,6 @@ fn safe_basename(name: &str) -> Result<&str> {
         }
     }
     Ok(name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::safe_basename;
-
-    #[test]
-    fn rejects_path_traversal() {
-        assert!(safe_basename("../etc/passwd").is_err());
-        assert!(safe_basename("a/b").is_err());
-        assert!(safe_basename("a\\b").is_err());
-    }
-
-    #[test]
-    fn rejects_reserved_device_names() {
-        for bad in &["CON", "con", "Nul", "COM1.TXT", "lpt9.dat", "AUX"] {
-            assert!(safe_basename(bad).is_err(), "should reject {bad}");
-        }
-    }
-
-    #[test]
-    fn rejects_trailing_dot_or_space() {
-        for bad in &["CON.", "CON ", "NUL  ", "LPT1.", "FILE."] {
-            assert!(safe_basename(bad).is_err(), "should reject {bad}");
-        }
-    }
-
-    #[test]
-    fn accepts_plain_8_3() {
-        assert!(safe_basename("HELLO.TXT").is_ok());
-        assert!(safe_basename("README").is_ok());
-    }
-
-    #[test]
-    fn rejects_windows_illegal_chars() {
-        for bad in &["a*b.txt", "a?b.txt", "a\"b", "a<b", "a>b", "a|b", "a:b"] {
-            assert!(safe_basename(bad).is_err(), "should reject {bad}");
-        }
-    }
-
-    #[test]
-    fn load_archive_rejects_trailer_offset_past_eof() {
-        use crate::archive::write_trailer;
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .open(tmp.path())
-            .unwrap();
-        // 8-byte payload + 8-byte trailer; offset 9999 is way past EOF.
-        use std::io::Write;
-        f.write_all(&[0u8; 8]).unwrap();
-        write_trailer(&mut f, 9999).unwrap();
-        drop(f);
-        let err = super::load_archive(tmp.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("past end-of-file"),
-            "got: {err}"
-        );
-    }
 }
 
 /// Hard cap on input SFX size for host-side unpack. `Archive::read`
@@ -166,7 +108,10 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
     let mut f = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let total = f.metadata()?.len();
     if total < TRAILER_SIZE as u64 {
-        bail!("{}: too small to contain a doskrunch trailer", path.display());
+        bail!(
+            "{}: too small to contain a doskrunch trailer",
+            path.display()
+        );
     }
     if total > MAX_INPUT_SFX_BYTES {
         bail!(
@@ -179,8 +124,8 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
     f.seek(SeekFrom::End(-(TRAILER_SIZE as i64)))?;
     let mut tail = [0u8; TRAILER_SIZE];
     f.read_exact(&mut tail)?;
-    let archive_offset = read_trailer(&tail)
-        .map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e))?;
+    let archive_offset =
+        read_trailer(&tail).map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e))?;
     // The DKCH header is at least 25 bytes (4 magic + 17 fields + 4 crc),
     // so anything pointing past `total - TRAILER_SIZE` can't possibly
     // hold a valid header. Catch this here for a clearer error than
@@ -248,11 +193,9 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
                     }
                     continue;
                 }
-                let decoded = crate::compress::aplib::decompress(
-                    &c.data,
-                    c.uncompressed_size as usize,
-                )
-                .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
+                let decoded =
+                    crate::compress::aplib::decompress(&c.data, c.uncompressed_size as usize)
+                        .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
                 data.extend_from_slice(&decoded);
             }
             _ => unreachable!("rejected above"),
@@ -271,4 +214,60 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
     // so `out` is always `<dest>/<basename>`. `dest` was created in unpack().
     fs::write(out, &data).with_context(|| format!("write {}", out.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_basename;
+
+    #[test]
+    fn rejects_path_traversal() {
+        assert!(safe_basename("../etc/passwd").is_err());
+        assert!(safe_basename("a/b").is_err());
+        assert!(safe_basename("a\\b").is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_device_names() {
+        for bad in &["CON", "con", "Nul", "COM1.TXT", "lpt9.dat", "AUX"] {
+            assert!(safe_basename(bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn rejects_trailing_dot_or_space() {
+        for bad in &["CON.", "CON ", "NUL  ", "LPT1.", "FILE."] {
+            assert!(safe_basename(bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn accepts_plain_8_3() {
+        assert!(safe_basename("HELLO.TXT").is_ok());
+        assert!(safe_basename("README").is_ok());
+    }
+
+    #[test]
+    fn rejects_windows_illegal_chars() {
+        for bad in &["a*b.txt", "a?b.txt", "a\"b", "a<b", "a>b", "a|b", "a:b"] {
+            assert!(safe_basename(bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn load_archive_rejects_trailer_offset_past_eof() {
+        use crate::archive::write_trailer;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(tmp.path())
+            .unwrap();
+        // 8-byte payload + 8-byte trailer; offset 9999 is way past EOF.
+        use std::io::Write;
+        f.write_all(&[0u8; 8]).unwrap();
+        write_trailer(&mut f, 9999).unwrap();
+        drop(f);
+        let err = super::load_archive(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("past end-of-file"), "got: {err}");
+    }
 }

@@ -32,10 +32,7 @@ pub enum WaitError {
 /// timeout or `try_wait` error, send SIGKILL and reap so the test
 /// fails fast instead of hanging until GitHub's job-level cap.
 #[allow(dead_code)]
-pub fn wait_with_timeout(
-    child: &mut Child,
-    timeout: Duration,
-) -> Result<ExitStatus, WaitError> {
+pub fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus, WaitError> {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
@@ -64,7 +61,11 @@ pub fn wait_with_timeout(
 pub fn locate_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
     for entry in fs::read_dir(dir).ok()? {
         let entry = entry.ok()?;
-        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+        {
             return Some(entry.path());
         }
     }

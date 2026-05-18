@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Principle of least privilege: GITHUB_TOKEN gets read-only access to
+# the repo (enough for actions/checkout and registry caching). No job
+# in this workflow needs write access.
+permissions:
+  contents: read
+
 jobs:
   host-tests:
     strategy:

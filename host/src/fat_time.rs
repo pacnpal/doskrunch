@@ -22,8 +22,7 @@ pub fn unix_to_fat(secs_since_epoch: i64) -> u32 {
     } else {
         (y, mo, d, h, mi, s)
     };
-    let dos_date: u16 =
-        (((y - FAT_EPOCH_YEAR) as u16) << 9) | ((mo as u16) << 5) | (d as u16);
+    let dos_date: u16 = (((y - FAT_EPOCH_YEAR) as u16) << 9) | ((mo as u16) << 5) | (d as u16);
     let dos_time: u16 = ((h as u16) << 11) | ((mi as u16) << 5) | ((s as u16) / 2);
     ((dos_date as u32) << 16) | (dos_time as u32)
 }
