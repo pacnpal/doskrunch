@@ -73,7 +73,60 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 
 ## Phase 3: 386 + pentium tiers
 
-Not started.
+- [x] Port apultra's `asm/x86/aplib_x86_small.asm` to
+      `stubs/src/aplib_depack_32.asm` (bits 16, cpu 386, Watcom small-
+      model regparm ABI). Replaces the upstream `call .init_get_bit /
+      pop ebp` size trick (broken under 16-bit push width) and
+      `push 3 / pop ebx` with the explicit `mov bp,…` /
+      `mov ebx, 3` patterns from the 8086 port.
+- [x] Port apultra's `asm/x86/aplib_x86_fast.asm` to
+      `stubs/src/aplib_depack_p5.asm` (bits 16, cpu pentium, macro-
+      inlined `apl_get_bit`). No manual U/V pipe scheduling in this
+      revision — Karpathy: measure before scheduling.
+- [x] Single-source `stubs/src/stub.c` — all three depacker `.obj`
+      files export the same `aplib_depack` symbol with the same C
+      ABI, so the Makefile picks the `.obj` per tier without a
+      `-DALGO_DEPACK_*` toggle.
+- [x] `stubs/Makefile` builds three blobs: `aplib_8086.bin` (wcc -0
+      + aplib_depack_16.asm, hard ceiling 8 KB), `aplib_386.bin`
+      (wcc -3 + aplib_depack_32.asm, hard ceiling 10 KB),
+      `aplib_pentium.bin` (wcc -5 + aplib_depack_p5.asm, hard
+      ceiling 12 KB).
+- [x] Three blobs committed under `stubs/blobs/`. Sizes:
+      8086 = 6400 B, 386 = 6416 B, pentium = 6464 B — all well
+      under their hard ceilings. The 8086 blob is byte-identical
+      to the Phase 2 committed copy when rebuilt from the same
+      Watcom snapshot (reproducibility preserved).
+- [x] `host/src/stubs.rs` embeds the two new blobs via
+      `include_bytes!` and routes `(Stored|Aplib, I386|Pentium)` →
+      the matching blob.
+- [x] `host/src/main.rs::list-targets` flips 386 and pentium from
+      "planned (phase 3)" to "shipped".
+- [x] `host/tests/dosbox_aplib_386.rs` and
+      `host/tests/dosbox_aplib_pentium.rs` — `#[ignore]`-gated
+      DOSBox-X integration tests parallel to the 8086 version.
+- [x] `tests/benchmarks/results.md` populated by
+      `host/tests/benchmark_tiers.rs` (also `#[ignore]`-gated).
+
+**Phase 3 verify**
+
+- [x] `cargo test --workspace` green (45 unit + 7 integration + 4
+      ignored DOSBox-X gates + 1 ignored benchmark gate).
+- [x] `SDL_VIDEODRIVER=dummy cargo test -- --ignored` extracts
+      byte-identical fixtures under `cputype=8086`, `cputype=386`,
+      and `cputype=pentium` (four DOSBox-X gates pass locally).
+- [x] Stub blob sizes within hard ceilings for every tier.
+- [ ] PLAN.md §10 "386 ≈ 2–4× 8086, pentium ≈ 5–10× 8086" speedup
+      gate. Current `tests/benchmarks/results.md` shows ≈1.00× /
+      1.10× under DOSBox-X with `cycles=auto`; the verify-gate
+      assumption is real-hardware performance and DOSBox-X's
+      heuristic cycle scaler doesn't reflect that. The asm ports
+      verifiably work (byte-identical round-trip across every tier);
+      hitting the speedup gate needs either real-iron measurement
+      (86Box / a real 386 or Pentium box) or a stub-side INT 1Ah
+      cycle-counter so the host harness can subtract DOS startup
+      overhead. Tracked here for the user to direct — per PLAN.md's
+      "push back before debugging the asm" guidance.
 
 ## Phase 4: chunked extraction, large payloads
 

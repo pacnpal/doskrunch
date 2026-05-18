@@ -1,0 +1,30 @@
+# Tier decompression benchmark
+
+Synthetic mixed-content payload: 500 KiB (512000 bytes) — text + zeros + LCG-random + repeated patterns. See `host/tests/benchmark_tiers.rs::synthesize_payload` for the exact distribution.
+
+Measurement: end-to-end SFX wall-clock under headless DOSBox-X with `cycles=auto`, min across 3 runs per tier. Run with:
+
+```bash
+SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture
+```
+
+| Tier | cputype | SFX size (bytes) | Wall clock min (ms) | Ratio vs 8086 |
+|------|---------|------------------|----------------------|----------------|
+| 8086 | 8086 | 153520 | 2241 | 1.00× |
+| 386 | 386 | 153536 | 2237 | 1.00× |
+| pentium | pentium | 153584 | 2032 | 1.10× |
+
+## Per-run detail
+
+| Tier | Run 1 (ms) | Run 2 (ms) | Run 3 (ms) |
+|------|------------|------------|------------|
+| 8086 | 2256 | 2241 | 2250 |
+| 386 | 2237 | 2239 | 2255 |
+| pentium | 2032 | 2047 | 2066 |
+
+## Caveats
+
+* `cycles=auto` is DOSBox-X's heuristic throughput scaler; results vary with host CPU and DOSBox-X version. Pentium emulation is more expensive per guest instruction than 386 emulation, which partially offsets the speed-optimized depacker's win.
+* Most wall-clock time is DOS startup overhead and INT 21h file I/O, not the depacker. The depacker is a small slice of the total run.
+* PLAN.md §10's 2–4× / 5–10× targets describe real-hardware behaviour. If the table above misses those, the next step is real-iron measurement (86Box or a real 486/Pentium box), *not* re-tuning the asm port.
+* The benchmark is `#[ignore]`-gated and runs on demand; CI doesn't regenerate this file. Commit a refreshed copy when the numbers move.

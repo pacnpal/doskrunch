@@ -65,7 +65,7 @@ Build fails if a blob exceeds the hard ceiling.
 3. **LZMA** optional, best ratio, **386+ only**. Host rejects `--algo lzma --target 8086|286`.
 4. **stored** always available, no compression. Phase 1 baseline.
 
-Default invocation today (Phase 2): `doskrunch pack out.exe files...` → `--algo aplib --target 8086`. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob.
+Default invocation today (Phase 3): `doskrunch pack out.exe files...` → `--algo aplib --target 8086`. The 8086 stub dispatches at runtime on the archive's algorithm byte, so `--algo stored` keeps working against the same blob. Phase 3 also ships `--target 386` (wcc -3 + 32-bit-register aPLib depacker from `aplib_depack_32.asm`) and `--target pentium` (wcc -5 + speed-optimized fast-variant depacker from `aplib_depack_p5.asm`); both blobs dispatch on the archive's algorithm byte the same way the 8086 blob does.
 
 ## Reproducible builds
 
@@ -73,7 +73,13 @@ On by default: timestamps zeroed, file entries sorted lexicographically by store
 
 ## DOSBox-X integration tests
 
-Planned for Phase 1 completion (not yet wired up): headless DOSBox-X with `cpu_type=` pinned per tier (`8086`, `386`, `pentium_mmx`) and a fixed `memsize`, run from CI. Once added under `tests/integration/`, run them locally with `cargo test --test integration -- --ignored` when DOSBox-X is installed.
+Headless DOSBox-X gates live in `host/tests/dosbox_*.rs`, each `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked. Run them locally with:
+
+```bash
+SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored
+```
+
+Phase 3 ships four gates: `dosbox_8086` (Phase 1 stored-default smoke test), `dosbox_aplib_8086`, `dosbox_aplib_386`, and `dosbox_aplib_pentium`. Each packs the fixture set with the matching `--target` and `--algo aplib`, runs the SFX under headless DOSBox-X with the matching `cputype=`, and asserts byte-identical extraction. The 500 KiB tier benchmark (`benchmark_tiers`) is also `#[ignore]`-gated and regenerates `tests/benchmarks/results.md` on demand.
 
 ## Phase status
 
