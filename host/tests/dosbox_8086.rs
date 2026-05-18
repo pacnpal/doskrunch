@@ -92,8 +92,13 @@ fn extracts_fixtures_under_8086_cputype() {
         .env("SDL_VIDEODRIVER", "dummy")
         .spawn()
         .expect("spawn dosbox-x (is it installed?)");
-    let dosbox_status = wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT)
-        .expect("dosbox-x timed out and was killed");
+    let dosbox_status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
+        Ok(status) => status,
+        Err(WaitError::Timeout) => panic!(
+            "dosbox-x did not exit within {DOSBOX_TIMEOUT:?}; child was killed"
+        ),
+        Err(WaitError::Wait(e)) => panic!("waiting on dosbox-x failed: {e}; child was killed"),
+    };
     assert!(
         dosbox_status.success(),
         "dosbox-x exited non-zero: {dosbox_status:?}",
@@ -119,27 +124,37 @@ fn extracts_fixtures_under_8086_cputype() {
     }
 }
 
+/// Reason `wait_with_timeout` had to kill the child. Distinguishing
+/// timeout from a `try_wait` syscall failure lets the caller surface a
+/// precise panic message in CI logs.
+enum WaitError {
+    Timeout,
+    Wait(std::io::Error),
+}
+
 /// Poll `try_wait` until the child exits or `timeout` elapses. On
-/// timeout, send SIGKILL and reap so the test fails loudly instead of
-/// hanging until GitHub's job-level cap. Returns `Some(status)` on a
-/// clean exit, `None` if the child had to be killed.
-fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Option<ExitStatus> {
+/// timeout or `try_wait` error, send SIGKILL and reap so the test
+/// fails fast instead of hanging until GitHub's job-level cap.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<ExitStatus, WaitError> {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
+            Ok(Some(status)) => return Ok(status),
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    return Err(WaitError::Timeout);
                 }
                 thread::sleep(Duration::from_millis(200));
             }
-            Err(_) => {
+            Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err(WaitError::Wait(e));
             }
         }
     }

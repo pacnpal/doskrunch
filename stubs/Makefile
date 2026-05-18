@@ -1,8 +1,9 @@
 # Open Watcom v2 build driver for doskrunch stub binaries.
 #
-# Invoked inside the volkertb/debian-open-watcom container (Linux host),
-# so commands use POSIX tools. Builds one stub per (algorithm, CPU tier)
-# and drops the result into blobs/<algo>_<tier>.bin.
+# Invoked inside the doskrunch-watcom container (debian:bookworm-slim
+# with Open Watcom v2 unpacked into /opt/watcom — see ./Dockerfile).
+# Builds one stub per (algorithm, CPU tier) and drops the result into
+# blobs/<algo>_<tier>.bin.
 #
 # Phase 1 ships only (stored, 8086). Phase 2+ adds aplib_8086. Phase 3
 # adds 386 and pentium tiers.
@@ -11,8 +12,8 @@
 #   make all      # build every shipped variant
 #   make clean
 #
-# Driven by GNU make; the volkertb/debian-open-watcom image already has
-# `make` available. Watcom tools are on PATH via /etc/profile.d/.
+# Driven by GNU make. The Dockerfile installs make and exports
+# WATCOM/PATH/INCLUDE/EDPATH so `wcl` resolves without further setup.
 
 OUTDIR  := blobs
 SRC     := src
