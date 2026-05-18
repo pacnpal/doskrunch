@@ -1,5 +1,12 @@
-//! Phase 4 verify gate (PLAN.md §10): timestamps on extracted files
-//! match the original, truncated to FAT's 2-second resolution.
+//! Phase 4 verify gate (PLAN.md §10): the source mtime's UTC
+//! broken-down components survive the pack → DOSBox-X → host
+//! `fs::metadata` round-trip as the extracted file's LOCAL broken-down
+//! components. The two instants are NOT equal in non-UTC environments —
+//! DOS treats FAT dates as wall-clock LOCAL with no timezone concept,
+//! while pack-side `unix_to_fat` decomposes the UTC mtime, so an
+//! unshifted round-trip lands with extracted-LOCAL = source-UTC. This
+//! is the FAT-2-second-resolution invariant PLAN.md asks for, expressed
+//! in the reference frame the OS actually uses.
 //!
 //! The pack-time path (`host/src/pack.rs::pack` ⇒
 //! `fat_time::unix_to_fat` when `--preserve-timestamps` is set) and the

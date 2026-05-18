@@ -15,9 +15,10 @@ pub fn unix_to_fat(secs_since_epoch: i64) -> u32 {
     let (y, mo, d, h, mi, s) = if y < FAT_EPOCH_YEAR {
         (FAT_EPOCH_YEAR, 1, 1, 0, 0, 0)
     } else if y > FAT_MAX_YEAR {
-        // 23:59:58 because dos_time stores seconds/2; the largest
-        // representable seconds-field is 30 (60s would overflow the
-        // 5-bit field). Day 31 is valid for December.
+        // 23:59:58 because dos_time stores seconds/2 in a 5-bit
+        // field (max encoded value 29 → 58 s); 60 s would roll over
+        // into the next minute, not into the field's bit pattern.
+        // Day 31 is valid for December.
         (FAT_MAX_YEAR, 12, 31, 23, 59, 58)
     } else {
         (y, mo, d, h, mi, s)

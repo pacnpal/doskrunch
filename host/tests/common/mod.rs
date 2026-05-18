@@ -7,8 +7,10 @@
 //!
 //! Phase 3 had 6 dosbox_*.rs files plus benchmark_tiers.rs, all repeating
 //! the same WaitError / wait_with_timeout / locate_case_insensitive trio.
-//! Phase 4 crosses 8 dosbox files (2 MB gate + timestamp gate), which is
-//! when the duplication starts costing more than the indirection. Each
+//! Phase 4 adds three more dosbox files (`dosbox_2mb_memsize2`,
+//! `dosbox_timestamps`, `dosbox_stored_max_chunk`) for a total of 9
+//! dosbox callers + 1 benchmark caller — well past the threshold where
+//! the duplication starts costing more than the indirection. Each
 //! caller still picks its own DOSBOX_TIMEOUT and writes its own
 //! `dosbox.conf` inline, because those vary per test.
 

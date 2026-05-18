@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -344,6 +344,7 @@ fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
 fn read_no_follow(path: &Path) -> std::io::Result<Vec<u8>> {
     #[cfg(unix)]
     {
+        use std::io::Read as _;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = fs::OpenOptions::new()
             .read(true)
