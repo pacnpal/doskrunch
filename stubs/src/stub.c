@@ -11,11 +11,15 @@
  * Build: Open Watcom v2, real-mode DOS, -0 -ms -os.
  */
 
-#include "dos.h"
+#include <dos.h>
 #include <fcntl.h>
 #include <io.h>
 #include <stdlib.h>
 #include <string.h>
+
+typedef unsigned char  u8;
+typedef unsigned short u16;
+typedef unsigned long  u32;
 
 #define BUF_SIZE 16384u
 #define TRAILER_SIZE 8u

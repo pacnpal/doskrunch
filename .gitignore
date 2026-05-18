@@ -8,3 +8,12 @@ tests/integration/work/
 fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
+
+# Watcom build artefacts (the .bin output is committed; the .exe/.o aren't).
+stubs/blobs/*.exe
+stubs/*.o
+stubs/*.obj
+stubs/*.err
+stubs/src/*.o
+stubs/src/*.obj
+stubs/src/*.err

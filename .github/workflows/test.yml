@@ -1,0 +1,96 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+
+  dosbox-x-integration:
+    # Pin the Ubuntu image: dosbox-x lives in 24.04's universe repo. If
+    # ubuntu-latest moves to a release where the package name or
+    # availability differs, the apt install below would break silently.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install DOSBox-X
+        # Ubuntu 24.04 ships dosbox-x in universe. apt-get suffices; no PPA.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dosbox-x
+
+      - name: Cache cargo registry and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-24.04-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-24.04-cargo-
+
+      - name: cargo test --workspace -- --ignored
+        # The headless DOSBox-X test is `#[ignore]`-gated so contributors
+        # without `dosbox-x` installed locally can still `cargo test`.
+        # Regular tests run on the `host-tests` matrix; this job only
+        # exercises the DOS-side gate.
+        run: cargo test --workspace --locked -- --ignored
+        env:
+          SDL_VIDEODRIVER: dummy
+
+  fuzz-archive-read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        # Pin a known-good cargo-fuzz so a new release with breaking
+        # changes or incompatible deps can't make this job flake.
+        # No --locked: cargo-fuzz doesn't publish its Cargo.lock to
+        # crates.io, so cargo install --locked fails on a clean runner.
+        run: cargo install cargo-fuzz --version 0.13.1
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ubuntu-latest-fuzz-${{ hashFiles('host/fuzz/Cargo.toml') }}
+          restore-keys: |
+            ubuntu-latest-fuzz-
+
+      - name: Fuzz Archive::read for 60s
+        working-directory: host
+        run: cargo +nightly fuzz run fuzz_archive_read -- -max_total_time=60
