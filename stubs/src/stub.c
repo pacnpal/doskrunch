@@ -49,12 +49,28 @@ static u8  g_src[APLIB_SRC_SIZE];
  * `aplib_depack` (no underscore). Without it, wlink errors with
  * `undefined symbol aplib_depack_`.
  *
- * `modify` explicitly includes SI and DI: the depacker uses them as
- * iterators and trashes them on exit. Under Watcom's register-based
- * calling convention input registers are caller-saved, so this is
- * documentation parity with the asm header's `Trashes:` line. */
+ * `modify exact` lists everything the asm actually trashes EXCEPT
+ * registers the wrapper preserves (BP, ES). The wrapper restores BP
+ * because Watcom keeps a `[bp-N]` frame pointer in BP — if we claimed
+ * BP as caller-clobbered, Watcom would also emit useless save/restore
+ * for it around the call.
+ *
+ * TRUST BOUNDARY: this depacker has no destination-capacity argument
+ * and stops only when the bitstream itself emits the EOD marker. A
+ * corrupted/hostile archive could declare `usize <= BUF_SIZE` while
+ * the bitstream decompresses to more bytes, walking DI past the end
+ * of g_buf into g_src and the rest of BSS before control returns to
+ * the `produced != usize` check below. The host enforces the chunk
+ * input ceiling (archive.rs APLIB_CHUNK_INPUT = 16 KiB) and rewrites
+ * a fresh per-file CRC32 over the uncompressed bytes during pack;
+ * end-to-end integrity is checked by the host on unpack but the stub
+ * deliberately skips that check (~150 bytes of code) and relies on
+ * the upstream depacker not running away on well-formed apultra
+ * output. If you're feeding archives from an untrusted source, host-
+ * unpack first — the stub's threat model assumes the producer is
+ * trusted. */
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
-#pragma aux aplib_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di bp];
+#pragma aux aplib_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
 
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };

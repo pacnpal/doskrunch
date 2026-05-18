@@ -35,9 +35,11 @@ fn main() {
         .define("NDEBUG", None)
         .warnings(false);
 
-    // Watch the whole vendored tree so a `git subtree pull` triggers a
-    // rebuild without needing per-file directives.
-    println!("cargo:rerun-if-changed={}", vendor.display());
+    // Only watch the C library source dir. The rest of the vendored
+    // tree (vendor/apultra/asm/, VS2017/, README, etc.) doesn't affect
+    // the static lib we compile here; an unrelated subtree pull
+    // shouldn't force a full apultra rebuild.
+    println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-changed=build.rs");
 
     build.compile("apultra");
