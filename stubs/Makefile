@@ -37,11 +37,12 @@ all: $(OUTDIR)/aplib_8086.bin
 $(SRC)/aplib_depack_16.obj: $(SRC)/aplib_depack_16.asm
 	$(NASM) -f obj -o $@ $<
 
-# Compile in $(SRC) so wcc deposits `stub.obj` next to the source. wcc
-# without `-fo=` writes <basename>.obj in CWD, which is the cleanest
-# path on Open Watcom v2.
+# Compile in $(SRC) so wcc deposits `stub.obj` next to the source.
+# `-fo=stub.obj` is REQUIRED — Open Watcom v2 wcc does not default
+# to "<basename>.obj in CWD"; without -fo it silently produces no
+# output and still exits 0, which broke the build twice.
 $(SRC)/stub.obj: $(SRC)/stub.c
-	cd $(SRC) && $(WCC) $(WCC_FLAGS_8086) stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_8086) -fo=stub.obj stub.c
 
 # Direct wlink invocation. wlink reads its directive language from
 # the command line: `system dos` picks the DOS-mz output format and

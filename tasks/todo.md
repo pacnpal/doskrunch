@@ -57,19 +57,19 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
       host-side end-to-end.
 - [x] `host/tests/dosbox_aplib_8086.rs` — `#[ignore]`-gated DOSBox-X
       integration test parallel to `dosbox_8086.rs`.
-- [ ] Commit the rebuilt `stubs/blobs/aplib_8086.bin` (produced by
-      CI's `build-stubs.yml` after the first push).
+- [x] Commit the Watcom-built `stubs/blobs/aplib_8086.bin`
+      (6384 bytes, under the 8 KB hard ceiling).
 
 **Phase 2 verify**
 
-- [x] `cargo test --workspace` green (43 unit + 7 integration + 1
-      ignored stored DOSBox + 1 ignored aplib DOSBox).
+- [x] `cargo test --workspace` green (45 unit + 7 integration + 2
+      ignored DOSBox-X gates).
 - [x] `cargo run -- pack o.exe tests/fixtures/*` with no flags
       produces a strictly smaller `.EXE` than the same call with
       `--algo stored`.
 - [ ] DOSBox-X headless extraction with `--algo aplib` byte-identical
-      against fixtures (`cpu_type=8086`, `memsize=4`). Pending the
-      Watcom-built aplib blob landing.
+      against fixtures (`cpu_type=8086`, `memsize=4`). Verified once
+      CI's `dosbox-x-integration` job runs against the new blob.
 
 ## Phase 3: 386 + pentium tiers
 

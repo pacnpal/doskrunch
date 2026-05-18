@@ -6,14 +6,10 @@
 //! decompresses both `stored` and `aplib` chunks at runtime (dispatched on
 //! the archive's algorithm byte). The host returns the same blob for both
 //! `Algorithm::Stored` and `Algorithm::Aplib` on the 8086 target.
-//!
-//! The legacy `stored_8086.bin` filename is kept on disk until the new
-//! Watcom build lands and the file is renamed. Once that happens, this
-//! constant and the embed path flip to `aplib_8086.bin`.
 
 use crate::archive::{Algorithm, TargetTier};
 
-const APLIB_8086: &[u8] = include_bytes!("../../stubs/blobs/stored_8086.bin");
+const APLIB_8086: &[u8] = include_bytes!("../../stubs/blobs/aplib_8086.bin");
 
 /// Returns the prebuilt stub blob for the given (algorithm, tier), or an
 /// error if the combination isn't shipped yet.
