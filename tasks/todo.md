@@ -105,6 +105,16 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
 - [x] `host/tests/dosbox_aplib_386.rs` and
       `host/tests/dosbox_aplib_pentium.rs` — `#[ignore]`-gated
       DOSBox-X integration tests parallel to the 8086 version.
+- [x] `host/tests/dosbox_aplib_large.rs` — multi-chunk DOSBox-X
+      correctness gate: 500 KiB synthetic payload extracted
+      byte-identical at every tier under the matching `cputype=`.
+- [x] `host/tests/dosbox_stored_all_tiers.rs` — `--algo stored`
+      DOSBox-X coverage at each shipped tier. Closes the gap where
+      the stub's stored runtime branch (`algo == 0`, no depacker)
+      had no DOSBox-X coverage on the new wcc -3 / -5 builds; the
+      original Phase 1 `dosbox_8086.rs` smoke test stopped
+      covering stored after Phase 2 flipped the host's `--algo`
+      default to aplib.
 - [x] `tests/benchmarks/results.md` populated by
       `host/tests/benchmark_tiers.rs` (also `#[ignore]`-gated).
 
@@ -114,17 +124,20 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
       ignored DOSBox-X gates + 1 ignored benchmark gate).
 - [x] `SDL_VIDEODRIVER=dummy cargo test -- --ignored` extracts
       byte-identical fixtures under `cputype=8086`, `cputype=386`,
-      and `cputype=pentium` (four DOSBox-X gates pass locally).
+      and `cputype=pentium` (six DOSBox-X gates pass locally:
+      `dosbox_8086`, `dosbox_aplib_{8086,386,pentium}`,
+      `dosbox_aplib_large`, `dosbox_stored_all_tiers`).
 - [x] Stub blob sizes within hard ceilings for every tier.
 - [ ] PLAN.md §10 Phase 3 Verify: "386 is 2-4x faster than 8086,
       pentium is 5-10x faster" speedup gate. **Not met.**
       `tests/benchmarks/results.md` currently shows 1.00× / 1.00× /
       1.10× under DOSBox-X with `cycles=auto`. What we have data
-      for: correctness. The DOSBox-X correctness gates
+      for: correctness. The six DOSBox-X correctness gates
       (`dosbox_8086`, `dosbox_aplib_8086`, `dosbox_aplib_386`,
-      `dosbox_aplib_pentium`, and the multi-chunk
-      `dosbox_aplib_large`) all extract byte-identical at every
-      tier, so we know the depackers produce correct output. Where
+      `dosbox_aplib_pentium`, the multi-chunk `dosbox_aplib_large`,
+      and the per-tier `dosbox_stored_all_tiers`) all extract
+      byte-identical at every tier, so we know both algorithm
+      paths produce correct output on every shipped tier. Where
       the speedup went is currently a hypothesis, not a
       measurement: DOSBox-X auto-cycles likely tunes per-cputype
       throughput in a way that flattens relative-CPU comparison,
