@@ -188,9 +188,36 @@ fn write_dosbox_conf(path: &std::path::Path, mount: &std::path::Path) {
     .expect("write dosbox.conf");
 }
 
+/// Pin TZ to a fixed non-UTC value for the duration of the test
+/// process so `localtime_r` (and DOSBox-X, which inherits TZ) interpret
+/// FAT dates as Eastern time. Without this, CI runners that default
+/// to UTC would have `localtime_r` and `gmtime_r` return the same
+/// components — and a pack-side regression that accidentally uses
+/// LOCAL instead of UTC during `unix_to_fat` would slip past both
+/// timestamp gates. America/New_York has DST so the offset varies,
+/// which is fine: the invariant is "extracted LOCAL == source UTC
+/// modulo whatever offset", and the test compares broken-down
+/// components after the same TZ pass.
+///
+/// std::env::set_var is `unsafe` since Rust 1.78 due to potential
+/// races with concurrent libc env reads; the dosbox tests are
+/// single-threaded so a one-shot set+tzset is safe in practice.
+/// `tzset()` isn't bound in the `libc` crate, so declare the extern
+/// inline — it's a POSIX function on every relevant target.
+fn pin_test_tz() {
+    extern "C" {
+        fn tzset();
+    }
+    unsafe {
+        std::env::set_var("TZ", "America/New_York");
+        tzset();
+    }
+}
+
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn preserves_pinned_source_mtime_through_dos_extraction() {
+    pin_test_tz();
     // Two complementary checks:
     //   1. Pack-side: re-open the archive bytes with `inspect` and
     //      confirm the stored per-file timestamp equals
@@ -288,6 +315,7 @@ fn preserves_pinned_source_mtime_through_dos_extraction() {
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
 fn pre_1980_source_mtime_clamps_exactly_to_fat_epoch_endpoint() {
+    pin_test_tz();
     // Source mtime: 1979-06-15 17:42:00 UTC — deliberately NOT
     // Jan 1 / midnight so we actually verify the clamp zeroes
     // month/day/time as well as the year. fat_time::unix_to_fat

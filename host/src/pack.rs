@@ -100,7 +100,21 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // purpose is intended. The output path is excluded so re-running
     // `doskrunch pack dir/OUT.EXE dir/` doesn't pack the previous SFX
     // into the new SFX (which would also break rerun determinism).
-    let exclude = canonicalize_for_exclude(&opts.output);
+    let exclude = canonicalize_for_exclude(&opts.output)?;
+    // Windows: warn loudly if the output already exists. The
+    // canonical-path fallback in `matches_exclude` won't catch NTFS
+    // hard links from inputs back to the output, so a user packing a
+    // directory that contains a hard link to the output could lose
+    // data when `File::create(output)` truncates the linked inode.
+    // On unix this is caught by the (dev, ino) inode comparison.
+    #[cfg(windows)]
+    if exclude.is_some() {
+        eprintln!(
+            "warning: on Windows, doskrunch can't detect NTFS hard links to the output. \
+             Make sure no input file is a hard link to {}.",
+            opts.output.display()
+        );
+    }
     let expanded = expand_inputs(&opts.inputs, exclude.as_deref())?;
     if expanded.len() > u16::MAX as usize {
         bail!(
@@ -118,9 +132,11 @@ pub fn pack(opts: PackOptions) -> Result<()> {
         // expand_inputs and this stat is caught here — we documented
         // "symlinks not followed" as a hard boundary in the CLI help, so
         // honour that even under concurrent modification of the input
-        // tree. A real attacker still has a tiny window before
-        // `fs::read` below, but using symlink_metadata closes the
-        // larger one.
+        // tree. The actual read further down uses `read_no_follow`
+        // (unix `O_NOFOLLOW`), which closes the swap-to-symlink window
+        // between this stat and the open. The remaining residual
+        // windows (parent-component swap, directory-swap during walk)
+        // are documented on `expand_inputs`.
         let meta = fs::symlink_metadata(src).with_context(|| format!("stat {}", src.display()))?;
         if meta.file_type().is_symlink() {
             bail!(
@@ -347,11 +363,22 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, exclude: Option<&Path>) -> Resul
 }
 
 /// Canonicalize `path` for use as the walk-exclusion key. Returns
-/// `None` if the path doesn't yet exist on disk (e.g. the first pack
-/// run before the output file is created) — there's nothing to exclude
-/// in that case.
-fn canonicalize_for_exclude(path: &Path) -> Option<PathBuf> {
-    fs::canonicalize(path).ok()
+/// `Ok(None)` if the path doesn't yet exist on disk (e.g. the first
+/// pack run before the output file is created) — there's nothing to
+/// exclude in that case. Surfaces other errors (permissions denied,
+/// symlink loop, …) instead of silently disabling self-exclusion,
+/// which would let a misconfigured workflow pack a same-inode output
+/// back into the new SFX.
+fn canonicalize_for_exclude(path: &Path) -> Result<Option<PathBuf>> {
+    match fs::canonicalize(path) {
+        Ok(p) => Ok(Some(p)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::anyhow!(
+            "canonicalize output {}: {}",
+            path.display(),
+            e
+        )),
+    }
 }
 
 fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
@@ -378,10 +405,17 @@ fn matches_exclude(candidate: &Path, exclude: Option<&Path>) -> bool {
             }
         }
     }
-    // Fallback: canonical-path equality. Catches symlinks-to-output
-    // and is the only check on non-unix targets (Windows file-ID
-    // comparison would need GetFileInformationByHandle via FFI; the
-    // path-equality fallback is sufficient for the common case).
+    // Fallback: canonical-path equality. Catches symlinks-to-output.
+    // On non-unix (Windows) this is the ONLY check we run, and it
+    // does NOT catch NTFS hard links — a distinct input path that's
+    // a hard link to the output has a distinct canonical path, so
+    // it would slip past this check, get packed, and then be
+    // truncated when `File::create(output)` runs (corrupting the
+    // input). Closing that on Windows needs file-identity comparison
+    // via `GetFileInformationByHandle` (volume_serial_number +
+    // file_index), which is unstable in std and would otherwise need
+    // a `windows-sys` dep. Warned about in `pack()` when running on
+    // Windows with a pre-existing output; see the eprintln there.
     fs::canonicalize(candidate)
         .map(|c| c == target)
         .unwrap_or(false)
