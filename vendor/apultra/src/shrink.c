@@ -23,7 +23,7 @@
 /*
  * Uses the libdivsufsort library Copyright (c) 2003-2008 Yuta Mori
  *
- * Inspired by cap by Sven-�ke Dahl. https://github.com/svendahl/cap
+ * Inspired by cap by Sven-�ke Dahl. https://github.com/svendahl/cap
  * Also inspired by Charles Bloom's compression blog. http://cbloomrants.blogspot.com/
  * With ideas from LZ4 by Yann Collet. https://github.com/lz4/lz4
  * With help and support from spke <zxintrospec@gmail.com>
@@ -1493,7 +1493,14 @@ static int apultra_compressor_init(apultra_compressor *pCompressor, const int nB
             pCompressor->open_intervals = (unsigned long long *)malloc((LCP_AND_TAG_MAX + 1) * sizeof(unsigned long long));
 
             if (pCompressor->open_intervals) {
-               pCompressor->arrival = (apultra_arrival *)malloc((nBlockSize + 1) * nMaxArrivals * sizeof(apultra_arrival));
+               /* doskrunch: cast to size_t to suppress CodeQL's
+                * multiplication-result-converted-to-larger-type warning.
+                * The int×int product fits in int at apultra's current
+                * BLOCK_SIZE (1 MiB) × NARRIVALS_PER_POSITION_MAX (62) =
+                * ~65 M, but the cast keeps the warning quiet and makes
+                * the size_t conversion explicit. Re-apply this on any
+                * `git subtree pull --prefix=vendor/apultra ...`. */
+               pCompressor->arrival = (apultra_arrival *)malloc((size_t)(nBlockSize + 1) * (size_t)nMaxArrivals * sizeof(apultra_arrival));
 
                if (pCompressor->arrival) {
                   pCompressor->best_match = (apultra_final_match *)malloc(nBlockSize * sizeof(apultra_final_match));
