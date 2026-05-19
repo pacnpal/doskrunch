@@ -245,8 +245,15 @@ fn validate_run_after_bytes(cmd: &[u8]) -> Result<(), ArchiveError> {
         return Err(ArchiveError::RunAfterEmpty);
     }
     if cmd.len() > RUN_AFTER_MAX_LEN {
+        // Express `given` in pre-NUL bytes (cmd.len() - 1) so it
+        // matches what `set_run_after`'s error reports (the latter
+        // measures the user-supplied string before pushing the
+        // trailing NUL). `max` is already RUN_AFTER_MAX_LEN - 1
+        // (the pre-NUL ceiling); keeping the units symmetric stops
+        // the error message from looking off-by-one to anyone
+        // comparing the two paths.
         return Err(ArchiveError::RunAfterTooLong {
-            given: cmd.len(),
+            given: cmd.len() - 1,
             max: RUN_AFTER_MAX_LEN - 1,
         });
     }

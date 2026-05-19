@@ -572,10 +572,12 @@ error mid-phase; CI's build-stubs.yml is the fallback).
 
 **Phase 6 verify**
 
-- [x] `cargo test --workspace` green: 83 unit + 12 roundtrip + 3
-      aplib_roundtrip + 6 LZSA2 codec (was 73/12/3 in Phase 5). The
-      +10 unit tests are the LZSA2 codec + archive LZSA2 builder
-      coverage.
+- [x] `cargo test --workspace` green: 87 unit + 14 roundtrip + 3
+      aplib_roundtrip (was 73/12/3 at the end of Phase 5). The +14
+      unit tests are the LZSA2 codec (6), archive LZSA2 builder (4),
+      and archive run-after roundtrip / validation (4). The +2
+      roundtrip tests are the LZSA2 chunk-size CLI gate and the
+      run-after-via-CLI roundtrip.
 - [ ] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
       green across the now 17 ignored DOSBox-X gates (was 15 in
       Phase 5: the 15 existing gates plus dosbox_lzsa2_all_tiers and
