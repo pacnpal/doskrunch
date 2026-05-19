@@ -60,16 +60,34 @@ const LZMA_P3: &[u8] = include_bytes!("../../stubs/blobs/lzma_p3.bin");
 
 /// Returns the prebuilt stub blob for the given (algorithm, tier), or an
 /// error if the combination isn't shipped yet.
+///
+/// Stored / aplib / lzsa2 all share the per-tier aplib blob — the
+/// stub dispatches at runtime on the archive's algo byte (Phase 6
+/// linked `lzsa2_depack` alongside `aplib_depack` in each of the
+/// eight tier blobs). LZMA stays on its own per-tier blob because
+/// its decoder state + dict don't fit in small-model DS.
 pub fn stub_for(algo: Algorithm, target: TargetTier) -> Result<&'static [u8], String> {
     match (algo, target) {
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I8086) => Ok(APLIB_8086),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I286) => Ok(APLIB_286),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I386) => Ok(APLIB_386),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::I486) => Ok(APLIB_486),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::Pentium) => Ok(APLIB_PENTIUM),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::PentiumMmx) => Ok(APLIB_PENTIUM_MMX),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::P2) => Ok(APLIB_P2),
-        (Algorithm::Stored | Algorithm::Aplib, TargetTier::P3) => Ok(APLIB_P3),
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::I8086) => {
+            Ok(APLIB_8086)
+        }
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::I286) => {
+            Ok(APLIB_286)
+        }
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::I386) => {
+            Ok(APLIB_386)
+        }
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::I486) => {
+            Ok(APLIB_486)
+        }
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::Pentium) => {
+            Ok(APLIB_PENTIUM)
+        }
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::PentiumMmx) => {
+            Ok(APLIB_PENTIUM_MMX)
+        }
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::P2) => Ok(APLIB_P2),
+        (Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2, TargetTier::P3) => Ok(APLIB_P3),
         (Algorithm::Lzma, TargetTier::I386) => Ok(LZMA_386),
         (Algorithm::Lzma, TargetTier::I486) => Ok(LZMA_486),
         (Algorithm::Lzma, TargetTier::Pentium) => Ok(LZMA_PENTIUM),
@@ -78,7 +96,7 @@ pub fn stub_for(algo: Algorithm, target: TargetTier) -> Result<&'static [u8], St
         (Algorithm::Lzma, TargetTier::P3) => Ok(LZMA_P3),
         (a, t) => Err(format!(
             "no prebuilt stub for ({}, {}); shipped in this build: \
-             (stored|aplib, 8086|286|386|486|pentium|pentium-mmx|p2|p3) \
+             (stored|aplib|lzsa2, 8086|286|386|486|pentium|pentium-mmx|p2|p3) \
              + (lzma, 386|486|pentium|pentium-mmx|p2|p3)",
             a.name(),
             t.name()
