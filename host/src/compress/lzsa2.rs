@@ -62,16 +62,20 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
     }
     let max_out = unsafe { lzsa_get_max_compressed_size_inmem(data.len()) };
     let mut buf = vec![0u8; max_out];
-    // lzsa_compress_inmem takes the input as a mut pointer (it doesn't
-    // write to it, but the API isn't const-correct). We feed it a copy
-    // via to_vec so the caller's slice stays untouched even if lzsa
-    // ever starts writing to it.
-    let mut input_copy = data.to_vec();
+    // lzsa_compress_inmem takes the input as a `unsigned char *` (not
+    // const) but the implementation never writes to it — confirmed
+    // against `vendor/lzsa/src/shrink_inmem.c` where the buffer is
+    // only read by the suffix-array build + range coder. Cast away
+    // const to skip the per-chunk allocation a `to_vec()` would
+    // require. If upstream ever flips to actually writing the input,
+    // this would corrupt the caller's slice; pin upstream by SHA
+    // (already documented in CLAUDE.md) and re-audit on a subtree
+    // pull.
     let written = unsafe {
         lzsa_compress_inmem(
-            input_copy.as_mut_ptr(),
+            data.as_ptr() as *mut c_uchar,
             buf.as_mut_ptr(),
-            input_copy.len(),
+            data.len(),
             buf.len(),
             LZSA_FLAG_RAW_BLOCK | LZSA_FLAG_FAVOR_RATIO,
             LZSA_MIN_MATCH_SIZE_V2,
@@ -109,13 +113,14 @@ pub fn decompress(compressed: &[u8], expected_size: usize) -> Result<Vec<u8>, St
             expected_size
         ));
     }
-    let mut input_copy = compressed.to_vec();
+    // Same const-cast rationale as compress(): lzsa_decompress_inmem
+    // doesn't write to its input despite the non-const signature.
     let mut fmt_version: c_int = LZSA_FORMAT_VERSION_V2;
     let produced = unsafe {
         lzsa_decompress_inmem(
-            input_copy.as_mut_ptr(),
+            compressed.as_ptr() as *mut c_uchar,
             buf.as_mut_ptr(),
-            input_copy.len(),
+            compressed.len(),
             buf.len(),
             LZSA_FLAG_RAW_BLOCK,
             &mut fmt_version,
