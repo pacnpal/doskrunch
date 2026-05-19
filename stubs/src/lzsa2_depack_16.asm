@@ -57,7 +57,9 @@
 ;  output:
 ;    ax     decompressed byte count
 ;
-;  Trashes: ax, bx, cx, dx, si, di, bp, flags. es is preserved.
+;  Trashes: ax, bx, cx, dx, si, di, flags. es and bp are preserved
+;  (push/pop wrap the routine; Watcom's small-model `-os` keeps a
+;  frame pointer in BP that the caller expects to survive the call).
 ;  ---------------------------------------------------------------------------
 
 lzsa2_depack:
