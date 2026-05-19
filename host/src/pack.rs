@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::archive::{
-    build_aplib_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier, APLIB_CHUNK_INPUT,
+    build_aplib_entry, build_lzma_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier,
+    APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT,
 };
 use crate::fat_time::unix_to_fat;
 use crate::name83::{dedupe, mangle};
@@ -33,10 +34,21 @@ pub struct PackOptions {
 pub fn pack(opts: PackOptions) -> Result<()> {
     match opts.algorithm {
         Algorithm::Stored | Algorithm::Aplib => {}
-        Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
         Algorithm::Lzma => {
-            bail!("algorithm 'lzma' lands in phase 5 (and will require --target 386+ when enabled)")
+            // PLAN.md §4: LZMA is 386+ only. The decoder uses 32-bit
+            // integer arithmetic that the 8086 / 286 tiers can't run.
+            match opts.target {
+                TargetTier::I8086 | TargetTier::I286 => {
+                    bail!(
+                        "algorithm 'lzma' requires --target 386 or higher; \
+                         pick --target 386 (or 486 / pentium / pentium-mmx / p2 / p3), \
+                         or use --algo aplib if you need 8086 / 286 compatibility"
+                    );
+                }
+                _ => {}
+            }
         }
+        Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
     }
 
     // The CLI layer enforces the same ceiling; assert here so library
@@ -44,6 +56,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     // bad values before they reach the chunk encoder.
     let chunk_max = match opts.algorithm {
         Algorithm::Aplib => APLIB_CHUNK_INPUT,
+        Algorithm::Lzma => LZMA_CHUNK_INPUT,
         // Stored chunks are bounded by the per-chunk u16 size field.
         Algorithm::Stored => u16::MAX as usize,
         _ => unreachable!(),
@@ -231,7 +244,10 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             Algorithm::Aplib => {
                 build_aplib_entry(&stored_name, 0x20, timestamp, &data, opts.chunk_size)
             }
-            // Lzsa2/Lzma rejected earlier; unreachable here.
+            Algorithm::Lzma => {
+                build_lzma_entry(&stored_name, 0x20, timestamp, &data, opts.chunk_size)
+            }
+            // Lzsa2 rejected earlier; unreachable here.
             other => bail!("internal: unexpected algorithm {}", other.name()),
         }
         .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
@@ -516,13 +532,46 @@ mod tests {
     }
 
     #[test]
-    fn rejects_lzma_on_8086() {
+    fn rejects_lzma_on_8086_and_286() {
+        for target in [TargetTier::I8086, TargetTier::I286] {
+            let td = tempfile::tempdir().unwrap();
+            let input = make_input(td.path(), "a.txt", b"x");
+            let mut opts = default_opts(td.path(), vec![input], Algorithm::Lzma);
+            opts.target = target;
+            let err = pack(opts).unwrap_err();
+            assert!(
+                err.to_string().contains("lzma")
+                    && err.to_string().contains("386 or higher"),
+                "tier {target:?}: got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_lzma_on_386_and_above() {
+        // The stub blob dispatch will reject these until the LZMA
+        // stubs land — when that happens, this test should keep passing
+        // (stub_for returns Ok for the LZMA tier blob) and the pack
+        // itself succeeds end-to-end. Today it fails at stub_for which
+        // is still acceptable as long as the failure isn't the
+        // "requires 386 or higher" path.
         let td = tempfile::tempdir().unwrap();
         let input = make_input(td.path(), "a.txt", b"x");
-        let opts = default_opts(td.path(), vec![input], Algorithm::Lzma);
-        let err = pack(opts).unwrap_err();
-        assert!(err.to_string().contains("lzma"));
-        assert!(err.to_string().contains("phase 5"));
+        let mut opts = default_opts(td.path(), vec![input], Algorithm::Lzma);
+        opts.target = TargetTier::I386;
+        let result = pack(opts);
+        match result {
+            Ok(()) => {
+                // Stub is wired; archive built successfully.
+            }
+            Err(e) => {
+                let s = e.to_string();
+                assert!(
+                    !s.contains("requires 386 or higher"),
+                    "should not reject lzma on a 386+ target; got {s}"
+                );
+            }
+        }
     }
 
     #[test]

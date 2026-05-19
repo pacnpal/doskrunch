@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use doskrunch::archive::APLIB_CHUNK_INPUT;
+use doskrunch::archive::{APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT};
 use doskrunch::{archive, inspect, pack, unpack};
 
 #[derive(Parser)]
@@ -141,7 +141,8 @@ fn main() -> Result<()> {
             let max_chunk: Option<usize> = match algo {
                 AlgoArg::Aplib => Some(APLIB_CHUNK_INPUT),
                 AlgoArg::Stored => Some(u16::MAX as usize),
-                AlgoArg::Lzsa2 | AlgoArg::Lzma => None,
+                AlgoArg::Lzma => Some(LZMA_CHUNK_INPUT),
+                AlgoArg::Lzsa2 => None,
             };
             if let Some(max) = max_chunk {
                 if !(1..=max).contains(&chunk_size) {
@@ -178,8 +179,8 @@ fn main() -> Result<()> {
         Cmd::ListAlgos => {
             println!("aplib        shipped (default; via vendored apultra)");
             println!("stored       shipped (fallback / no-op baseline)");
+            println!("lzma         shipped (best ratio; --target 386+ only)");
             println!("lzsa2        planned (phase 6; fast decompression)");
-            println!("lzma         planned (phase 5; best ratio, 386+ only)");
             Ok(())
         }
     }

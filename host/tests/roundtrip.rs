@@ -288,36 +288,20 @@ fn chunk_size_above_stub_budget_for_aplib_is_rejected() {
 
 #[test]
 fn deferred_algorithm_takes_precedence_over_chunk_size_validation() {
-    // The CLI's `Lzsa2 | Lzma => None` branch deliberately skips
-    // chunk-size validation so `--algo lzma --chunk-size 99999`
-    // surfaces the more useful "lzma lands in phase 5" message
-    // instead of a generic chunk-size error. Without this gate, a
-    // refactor of `max_chunk` could re-introduce the chunk-size
-    // error precedence regression silently.
+    // The CLI's `Lzsa2 => None` branch deliberately skips chunk-size
+    // validation so `--algo lzsa2 --chunk-size 99999` surfaces the
+    // more useful "lzsa2 lands in phase 6" message instead of a generic
+    // chunk-size error. Without this gate, a refactor of `max_chunk`
+    // could re-introduce the chunk-size error precedence regression
+    // silently.
+    //
+    // Phase 5 flipped LZMA from deferred to shipped, so the LZMA half
+    // of this gate now lives in `lzma_target_validation_*` below. Only
+    // lzsa2 still takes the deferred-algo path today.
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("a.bin");
     std::fs::write(&src, b"x").unwrap();
     let exe = tmp.path().join("o.exe");
-    let mut pack = doskrunch();
-    pack.arg("pack").arg(&exe).arg(&src).args([
-        "--algo",
-        "lzma",
-        "--target",
-        "8086",
-        "--chunk-size",
-        "99999",
-    ]);
-    let out = pack.output().unwrap();
-    assert!(!out.status.success(), "lzma should bail");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("lzma") && stderr.contains("phase 5"),
-        "expected phase-5 lzma message, got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("chunk-size") && !stderr.contains("chunk_size"),
-        "chunk-size validation should be deferred, got: {stderr}"
-    );
 
     let mut pack = doskrunch();
     pack.arg("pack").arg(&exe).arg(&src).args([
@@ -339,6 +323,33 @@ fn deferred_algorithm_takes_precedence_over_chunk_size_validation() {
         !stderr.contains("chunk-size") && !stderr.contains("chunk_size"),
         "chunk-size validation should be deferred, got: {stderr}"
     );
+}
+
+#[test]
+fn lzma_rejected_on_8086_and_286_at_the_cli_layer() {
+    // Phase 5 ships LZMA on 386+. The 8086 / 286 tiers stay rejected
+    // by pack() because the decoder's 32-bit math doesn't fit those
+    // CPUs. Test both rejected tiers end-to-end through the CLI.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.bin");
+    std::fs::write(&src, b"x").unwrap();
+    let exe = tmp.path().join("o.exe");
+    for target in &["8086", "286"] {
+        let mut pack = doskrunch();
+        pack.arg("pack").arg(&exe).arg(&src).args([
+            "--algo", "lzma", "--target", target,
+        ]);
+        let out = pack.output().unwrap();
+        assert!(
+            !out.status.success(),
+            "pack should reject lzma on tier {target}"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("lzma") && stderr.contains("386 or higher"),
+            "tier {target}: expected lzma + 386 message, got: {stderr}"
+        );
+    }
 }
 
 #[test]
