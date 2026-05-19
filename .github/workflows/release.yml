@@ -95,8 +95,9 @@ jobs:
           cp README.md LICENSE PLAN.md "dist/${STAGE}/"
           cd dist
           if [[ "${{ matrix.archive-suffix }}" == ".zip" ]]; then
-            # `zip` ships on the windows-2022 runner via Git Bash; on
-            # macOS / Linux we'd never hit this arm.
+            # `7z` ships pre-installed on the windows-2022 runner; on
+            # macOS / Linux we never hit this arm because their matrix
+            # entries set archive-suffix=.tar.gz.
             7z a "${STAGE}${{ matrix.archive-suffix }}" "${STAGE}"
           else
             tar czf "${STAGE}${{ matrix.archive-suffix }}" "${STAGE}"

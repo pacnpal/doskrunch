@@ -139,15 +139,17 @@ measurement:
 
   One format-level constraint worth flagging now: `--run-after`
   encodes the command's archive byte offset in a u16, so the
-  cumulative archive prefix (25-byte header + sum of per-file
-  records, NOT counting the run-after command itself) has to fit
-  in 65,535 bytes. In practice that's roughly 16 KiB of file-record
-  framing — chunk count, names, CRC32s — independent of how much
-  the chunk data weighs. Packing a single big file with `--run-after`
-  always fits; packing thousands of small files might not. The
-  archive header CRC catches a header-side overflow at parse time;
-  `pack` itself bails with a clear "cumulative archive prefix
-  exceeds the 65535 byte u16 run_after_offset ceiling" error.
+  cumulative archive prefix (25-byte header + all per-file records,
+  including the per-chunk compressed data bytes themselves) has to
+  fit in 65,535 bytes. The DKCH on-disk layout puts chunk data
+  inline with each file's record, so chunk bytes count toward the
+  ceiling. In practice this caps the total compressed size of the
+  archive at roughly 64 KiB when `--run-after` is in use. A small
+  setup payload (config files, a one-off batch script, a tiny .EXE
+  to launch) fits comfortably; a multi-megabyte SFX doesn't.
+  `pack` bails with a clear "cumulative archive prefix exceeds the
+  65535 byte u16 run_after_offset ceiling" error rather than
+  silently truncating.
 - **SSE depacker variant for p3**. `stubs/src/aplib_depack_sse.asm` ships in
   the source tree with a `MOVUPS` 16-byte block copy, but isn't linked into
   `aplib_p3.bin`. Under DOSBox-X 2026.05.02 with `cputype=pentium_iii` the
