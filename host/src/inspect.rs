@@ -40,14 +40,18 @@ pub fn inspect(opts: InspectOptions) -> Result<()> {
     };
     println!("ratio        : {:.2}% of original", ratio);
     println!();
+    // Per-file table. Chunk count is useful for diagnosing per-chunk
+    // bugs (e.g. multi-chunk decode regressions); it's bounded by u16
+    // so the column never widens past 5 digits.
     println!(
-        "{:<14}  {:>10}  {:>10}  {:>10}",
-        "name", "usize", "csize", "crc32"
+        "{:<14}  {:>5}  {:>10}  {:>10}  {:>10}",
+        "name", "chunk", "usize", "csize", "crc32"
     );
     for f in &archive.files {
         println!(
-            "{:<14}  {:>10}  {:>10}  {:08x}",
+            "{:<14}  {:>5}  {:>10}  {:>10}  {:08x}",
             f.display_name(),
+            f.chunks.len(),
             f.uncompressed_size(),
             f.compressed_size(),
             f.crc32

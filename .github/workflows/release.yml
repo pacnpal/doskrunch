@@ -1,0 +1,138 @@
+name: release
+
+# Triggered on tag push (`v*`) — that's the canonical release path —
+# plus workflow_dispatch so you can dry-run the matrix from the
+# Actions tab against any branch. The workflow_dispatch run does NOT
+# create a GitHub Release; it just builds the artifacts and uploads
+# them as build artifacts so a maintainer can sanity-check.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Default to read-only for any job; the publish job opts into
+# contents:write at its own scope. Phase 4 review-bot precedent.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      # Native runner per target. cc-rs picks up the host's native
+      # toolchain for the vendored C dependencies (apultra,
+      # xz-embedded, lzsa); cross-compiling those from a Linux runner
+      # is doable but the macOS SDK + Windows MSVC stories make a
+      # native matrix the simpler choice. See README.md and PLAN.md
+      # for the algorithm/target trade-offs that shaped this layout.
+      matrix:
+        include:
+          - label: linux-x86_64
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive-suffix: .tar.gz
+            bin-suffix: ""
+          - label: linux-aarch64
+            runs-on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive-suffix: .tar.gz
+            bin-suffix: ""
+          - label: macos-x86_64
+            runs-on: macos-13
+            target: x86_64-apple-darwin
+            archive-suffix: .tar.gz
+            bin-suffix: ""
+          - label: macos-aarch64
+            runs-on: macos-15
+            target: aarch64-apple-darwin
+            archive-suffix: .tar.gz
+            bin-suffix: ""
+          - label: windows-x86_64
+            runs-on: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive-suffix: .zip
+            bin-suffix: .exe
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-release-
+
+      - name: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read the package version from Cargo.toml without pulling
+          # in a TOML parser. cargo-metadata would be cleaner but
+          # adds a build step; the project's workspace version lives
+          # at a fixed line in the root Cargo.toml.
+          VERSION=$(grep -E '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          STAGE="doskrunch-${VERSION}-${{ matrix.label }}"
+          mkdir -p "dist/${STAGE}"
+          cp "target/${{ matrix.target }}/release/doskrunch${{ matrix.bin-suffix }}" "dist/${STAGE}/"
+          cp README.md LICENSE PLAN.md "dist/${STAGE}/"
+          cd dist
+          if [[ "${{ matrix.archive-suffix }}" == ".zip" ]]; then
+            # `zip` ships on the windows-2022 runner via Git Bash; on
+            # macOS / Linux we'd never hit this arm.
+            7z a "${STAGE}${{ matrix.archive-suffix }}" "${STAGE}"
+          else
+            tar czf "${STAGE}${{ matrix.archive-suffix }}" "${STAGE}"
+          fi
+          ls -la "${STAGE}${{ matrix.archive-suffix }}"
+          echo "ARTIFACT=${STAGE}${{ matrix.archive-suffix }}" >> "$GITHUB_ENV"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: dist/${{ env.ARTIFACT }}
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    # Only publish on a real tag push. workflow_dispatch builds the
+    # matrix above for dry-running but doesn't create a Release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    # contents:write needed for the Release creation. Scoped to this
+    # one job so the rest of the workflow stays read-only.
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifacts directory
+        run: |
+          set -euo pipefail
+          find dist -mindepth 2 -maxdepth 2 -type f -exec mv {} dist/ \;
+          ls -la dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda  # v2.4.0
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
