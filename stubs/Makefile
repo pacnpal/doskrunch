@@ -14,7 +14,7 @@
 #   aplib_pentium.bin     wcc -5 + aplib_depack_p5.asm
 #   aplib_pentium-mmx.bin wcc -5 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
 #   aplib_p2.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
-#   aplib_p3.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
+#   aplib_p3.bin          wcc -6 + aplib_depack_sse.asm  (NEW, SSE MOVUPS block copy)
 #   lzma_<tier>.bin       wcc -3..-6 -mc + xz-embedded   (NEW; 386..p3, see LZMA section)
 #
 # Each aplib_<tier>.bin dispatches at runtime on the archive's
@@ -37,17 +37,17 @@
 #   * 486 reuses aplib_depack_32.asm — `cpu 386`, runs on every 32-bit
 #     CPU. The depacker has no BSWAP / CMPXCHG / etc. opportunities;
 #     the win is again on the C side.
-#   * pentium-mmx/p2/p3 link aplib_depack_mmx.asm — an MMX-accelerated
+#   * pentium-mmx/p2 link aplib_depack_mmx.asm — an MMX-accelerated
 #     aPLib depacker. The MMX path uses 8-byte MOVQ block copy only
 #     when the back-reference offset is >= 8 AND length is >= 8 (no
 #     overlap); short matches and overlapping matches (offset < length,
 #     the canonical run-length-on-zeros case) stay on the scalar
 #     `rep movsb` path the pentium tier uses. EMMS is emitted on exit
 #     unconditionally so a future x87 user can't see stale MMX tag
-#     words. The SSE-MOVUPS variant in aplib_depack_sse.asm is NOT
-#     linked — under DOSBox-X cputype=pentium_iii the MOVUPS block
-#     copy hangs on multi-chunk payloads; left for follow-up (see the
-#     p3 rule comment below).
+#     words.
+#   * p3 links aplib_depack_sse.asm — an SSE-accelerated aPLib depacker
+#     with a 16-byte MOVUPS block copy path when offset >= 16 AND
+#     length >= 16, scalar `rep movsb` fallback otherwise.
 #
 # Usage:
 #   make all      # build every shipped tier
@@ -118,16 +118,14 @@ $(SRC)/aplib_depack_p5.obj: $(SRC)/aplib_depack_p5.asm
 $(SRC)/aplib_depack_mmx.obj: $(SRC)/aplib_depack_mmx.asm
 	$(NASM) -f obj -o $@ $<
 
+$(SRC)/aplib_depack_sse.obj: $(SRC)/aplib_depack_sse.asm
+	$(NASM) -f obj -o $@ $<
+
 $(SRC)/lzsa2_depack_16.obj: $(SRC)/lzsa2_depack_16.asm
 	$(NASM) -f obj -o $@ $<
 
 $(SRC)/lzsa2_depack_32.obj: $(SRC)/lzsa2_depack_32.asm
 	$(NASM) -f obj -o $@ $<
-
-# aplib_depack_sse.obj is intentionally not built today; the .asm is
-# kept on disk for follow-up investigation (see the p3-tier comment
-# below for the deferral note). Reintroduce this rule when the SSE
-# path is wired back in.
 
 # ----- 8086 tier -------------------------------------------------------
 
@@ -272,25 +270,19 @@ $(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lz
 
 # ----- p3 tier ---------------------------------------------------------
 #
-# wcc -6 codegen + MMX aplib depacker. The SSE depacker variant lives
-# in stubs/src/aplib_depack_sse.asm but is NOT linked in — under
-# DOSBox-X cputype=pentium_iii the MOVUPS-based block copy hangs on
-# multi-chunk payloads (the small-fixture gate passes, the 500 KiB
-# multi-chunk gate doesn't). NASM disassembly of the loop encoding
-# looks correct, so the symptom is most likely a DOSBox-X SSE
-# emulation gap rather than a depacker bug; left for follow-up
-# investigation. p3 still benefits from wcc -6 codegen for the
-# surrounding C housekeeping and the MMX path for long matches.
+# wcc -6 codegen + SSE aplib depacker. The SSE path copies 16 bytes per
+# MOVUPS when match offset >= 16 and length >= 16; short or potentially
+# overlapping matches stay on scalar `rep movsb`.
 
 $(SRC)/stub_p3.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p3.obj stub.c
 
-$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_sse.obj $(SRC)/lzsa2_depack_32.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_p3.exe \
 	  file $(SRC)/stub_p3.obj \
-	  file $(SRC)/aplib_depack_mmx.obj \
+	  file $(SRC)/aplib_depack_sse.obj \
 	  file $(SRC)/lzsa2_depack_32.obj
 	@cp $(OUTDIR)/aplib_p3.exe $(OUTDIR)/aplib_p3.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_p3.bin); \

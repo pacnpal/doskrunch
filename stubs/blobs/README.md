@@ -24,7 +24,7 @@ on the requested `--target`.
 | `aplib_pentium.bin`     | `-5` | `aplib_depack_p5.asm` (252 B 32-bit speed-opt port, no manual U/V scheduling) | ≤8 KB target / 12 KB hard |
 | `aplib_pentium-mmx.bin` | `-5` | `aplib_depack_mmx.asm` (MMX 8-byte MOVQ block copy when offset >= 8 and length >= 8; scalar `rep movsb` otherwise; EMMS on exit) | ≤8 KB target / 12 KB hard |
 | `aplib_p2.bin`          | `-6` | `aplib_depack_mmx.asm` (same depacker as pentium-mmx; -6 codegen for the surrounding C) | ≤8 KB target / 12 KB hard |
-| `aplib_p3.bin`          | `-6` | `aplib_depack_mmx.asm` (SSE depacker variant exists in `aplib_depack_sse.asm` but is not wired in; see notes) | ≤10 KB target / 14 KB hard |
+| `aplib_p3.bin`          | `-6` | `aplib_depack_sse.asm` (SSE MOVUPS 16-byte block copy when offset >= 16 and length >= 16; scalar `rep movsb` otherwise) | ≤10 KB target / 14 KB hard |
 
 On the MMX gate: aPLib match copies use `rep movsb` over ranges where
 the source can overlap the destination (`offset < length`, the
@@ -33,14 +33,12 @@ so the MMX path only fires when offset >= 8 AND length >= 8. Short
 matches stay on the scalar path. EMMS is emitted on exit so any
 future x87 user in the stub doesn't see stale MMX tag words.
 
-On SSE for p3: `aplib_depack_sse.asm` ships in the source tree with a
-MOVUPS 16-byte block-copy path, but it isn't linked into
-`aplib_p3.bin`. Under DOSBox-X 2026.05.02 `cputype=pentium_iii` the
-SSE depacker hangs on multi-chunk payloads bigger than the small-
-fixture gate. NASM disassembly of the loop encoding looks right, so
-the symptom is most likely a DOSBox-X SSE emulation gap rather than a
-depacker bug. Verifying on a real Pentium III box or a different
-emulator would prove or disprove that. Left for follow-up.
+On SSE for p3: real-mode XMM use requires CR4.OSFXSR=1 and CR0.EM/TS
+cleared before any MOVUPS executes. `aplib_depack_sse.asm` enables
+those bits in its prologue; without that, strict emulators/real CPUs
+fault with #UD on first SSE instruction. This path is validated on
+QEMU `-cpu pentium3` with a 500 KiB multi-chunk payload at chunk sizes
+8, 64, 4096, and 16384 (byte-identical extraction).
 
 LZMA stub blobs ship now for 386..p3. They are NOT unified with the
 aplib blob via runtime dispatch — the LZMA range decoder state, the
