@@ -88,7 +88,7 @@ WCC_FLAGS_486    := $(WCC_FLAGS_COMMON) -4
 WCC_FLAGS_P5     := $(WCC_FLAGS_COMMON) -5
 WCC_FLAGS_P6     := $(WCC_FLAGS_COMMON) -6
 
-.PHONY: all clean
+.PHONY: all bench clean
 
 all: \
 	$(OUTDIR)/aplib_8086.bin \
@@ -479,6 +479,72 @@ $(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_p3.bin); \
 	  echo "lzma_p3.bin: $$SZ bytes (target ≤20480, hard ceiling 28672)"; \
 	  if [ $$SZ -gt 28672 ]; then echo "ERROR: lzma_p3 stub exceeds 28KB hard ceiling"; exit 1; fi
+
+# ----- bench blobs (Phase 3 8086/386/pentium decode-timing gate) -------
+#
+# RDTSC isn't available on 8086/386, so these blobs time the depacker with
+# the BIOS tick counter (INT 1Ah/AH=00h, ~18.2 Hz, 8086+). Compiled with
+# -DDKRUNCH_BENCH_TICKS, which turns on the timing wrappers + DKPERF.BIN
+# sidecar in stub.c. These blobs are NOT shipped: the instrumentation adds
+# ~1.3 KB (over the 8086 hard ceiling) and changes extraction behavior, so
+# it must stay out of `make all`. The host benchmark harness
+# (host/tests/benchmark_tiers.rs::benchmark_tier_decompression) swaps one
+# of these blobs onto the packed archive to read decode ticks.
+#
+#   docker run --rm -v "$PWD:/work" -w /work/stubs doskrunch-watcom make bench
+#   DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy \
+#     cargo test --test benchmark_tiers -- --ignored --nocapture
+#
+# Gitignored (stubs/blobs/*_bench.bin) so they never join the committed set.
+bench: \
+	$(OUTDIR)/aplib_8086_bench.bin \
+	$(OUTDIR)/aplib_386_bench.bin \
+	$(OUTDIR)/aplib_pentium_bench.bin
+
+$(SRC)/stub_8086_bench.obj: $(SRC)/stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_8086) -DDKRUNCH_BENCH_TICKS -fo=stub_8086_bench.obj stub.c
+
+$(OUTDIR)/aplib_8086_bench.bin: $(SRC)/stub_8086_bench.obj $(SRC)/aplib_depack_16.obj $(SRC)/lzsa2_depack_16.obj $(SRC)/exec_dos.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/aplib_8086_bench.exe \
+	  file $(SRC)/stub_8086_bench.obj \
+	  file $(SRC)/aplib_depack_16.obj \
+	  file $(SRC)/lzsa2_depack_16.obj \
+	  file $(SRC)/exec_dos.obj
+	@cp $(OUTDIR)/aplib_8086_bench.exe $(OUTDIR)/aplib_8086_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/aplib_8086_bench.bin); \
+	  echo "aplib_8086_bench.bin: $$SZ bytes (bench blob; not shipped)"
+
+$(SRC)/stub_386_bench.obj: $(SRC)/stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_386) -DDKRUNCH_BENCH_TICKS -fo=stub_386_bench.obj stub.c
+
+$(OUTDIR)/aplib_386_bench.bin: $(SRC)/stub_386_bench.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/aplib_386_bench.exe \
+	  file $(SRC)/stub_386_bench.obj \
+	  file $(SRC)/aplib_depack_32.obj \
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
+	@cp $(OUTDIR)/aplib_386_bench.exe $(OUTDIR)/aplib_386_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/aplib_386_bench.bin); \
+	  echo "aplib_386_bench.bin: $$SZ bytes (bench blob; not shipped)"
+
+$(SRC)/stub_p5_bench.obj: $(SRC)/stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -DDKRUNCH_BENCH_TICKS -fo=stub_p5_bench.obj stub.c
+
+$(OUTDIR)/aplib_pentium_bench.bin: $(SRC)/stub_p5_bench.obj $(SRC)/aplib_depack_p5.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/aplib_pentium_bench.exe \
+	  file $(SRC)/stub_p5_bench.obj \
+	  file $(SRC)/aplib_depack_p5.obj \
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
+	@cp $(OUTDIR)/aplib_pentium_bench.exe $(OUTDIR)/aplib_pentium_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium_bench.bin); \
+	  echo "aplib_pentium_bench.bin: $$SZ bytes (bench blob; not shipped)"
 
 clean:
 	rm -f $(OUTDIR)/*.exe $(OUTDIR)/*.bin

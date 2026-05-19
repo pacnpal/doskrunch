@@ -10,7 +10,8 @@
 //! `tests/benchmarks/results.md` and summarized in `tasks/todo.md`.
 //! The harness here reports both:
 //!   * isolated decode time (`INT 1Ah` BIOS ticks around `aplib_depack`,
-//!     emitted by the stub into `DKPERF.BIN` as little-endian `u32`), and
+//!     emitted into `DKPERF.BIN` as little-endian `u32` by the bench-only
+//!     stub blob built with `make bench`, swapped onto the archive here), and
 //!   * end-to-end SFX wall-clock.
 //!
 //! Double-gated: `#[ignore]` AND `DOSKRUNCH_RUN_BENCHMARK=1`. CI's
@@ -144,10 +145,21 @@ fn benchmark_tier_decompression() {
     fs::write(&payload_path, &payload).expect("write payload");
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
-    let tiers: &[(&str, &str)] = &[("8086", "8086"), ("386", "386"), ("pentium", "pentium")];
+    // (tier, cputype, bench blob). The bench blob is the same tier built
+    // with -DDKRUNCH_BENCH_TICKS (`make bench`); it emits DKPERF.BIN with
+    // the INT 1Ah decode-tick total. We pack with the shipped stub (so the
+    // reported SFX size is the real product size), then swap the bench
+    // blob onto that archive for the timed run — the shipped blobs carry
+    // no instrumentation, so the measurement must come from a bench blob.
+    let tiers: &[(&str, &str, &str)] = &[
+        ("8086", "8086", "aplib_8086_bench.bin"),
+        ("386", "386", "aplib_386_bench.bin"),
+        ("pentium", "pentium", "aplib_pentium_bench.bin"),
+    ];
+    let blobs_dir = root.join("stubs").join("blobs");
 
     let mut results: Vec<TierResult> = Vec::new();
-    for (tier, cputype) in tiers {
+    for (tier, cputype, bench_blob_name) in tiers {
         let sfx_path = work_path.join(format!("OUT_{tier}.EXE"));
         let status = Command::new(bin)
             .arg("pack")
@@ -160,6 +172,17 @@ fn benchmark_tier_decompression() {
 
         let sfx_size = fs::metadata(&sfx_path).expect("stat sfx").len();
 
+        // Build the instrumented SFX: the shipped archive bytes on top of
+        // the bench blob (which emits DKPERF.BIN). Requires `make bench`.
+        let bench_blob_path = blobs_dir.join(bench_blob_name);
+        assert!(
+            bench_blob_path.exists(),
+            "bench blob {bench_blob_name} not found — build it first:\n  \
+             docker run --rm -v \"$PWD:/work\" -w /work/stubs doskrunch-watcom make bench"
+        );
+        let bench_sfx_path = work_path.join(format!("BENCH_{tier}.EXE"));
+        build_bench_sfx(&sfx_path, &bench_blob_path, &bench_sfx_path);
+
         // dosbox-x needs the SFX named on an 8.3 path inside the mount.
         // We rename per-run so each tier's run-dir is independent.
         let mut runs_ms: Vec<u128> = Vec::with_capacity(RUNS_PER_TIER);
@@ -168,7 +191,7 @@ fn benchmark_tier_decompression() {
             let rundir = tempfile::tempdir().expect("rundir");
             let rundir_path = rundir.path();
             let runsfx = rundir_path.join("OUT.EXE");
-            fs::copy(&sfx_path, &runsfx).expect("copy sfx into rundir");
+            fs::copy(&bench_sfx_path, &runsfx).expect("copy sfx into rundir");
 
             let conf_path = rundir_path.join("dosbox.conf");
             fs::write(
@@ -312,7 +335,7 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
         payload.len(),
     ));
     md.push_str("Measurement setup:\n\n");
-    md.push_str("* Isolated decode time: the stub wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks) in benchmark runs. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
+    md.push_str("* Isolated decode time: a bench-only stub blob (built with `make bench`, never shipped) wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks). The harness swaps this blob onto the packed archive for the timed run, so the shipped stubs carry no instrumentation. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
     md.push_str("* End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs.\n");
     md.push_str("* Benchmark gating: `#[ignore]` AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file.\n\n");
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
@@ -387,6 +410,32 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     );
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
+}
+
+/// Build an instrumented bench SFX: the shipped archive bytes (read from
+/// `prod_sfx`) appended to `bench_blob`, with the trailing DKTR archive
+/// offset rewritten to the bench blob length. The stub finds the DKCH
+/// archive via EOF-8 -> archive_offset, so after swapping in a different-
+/// sized stub the offset must point at the new (post-blob) archive start.
+fn build_bench_sfx(prod_sfx: &Path, bench_blob: &Path, out: &Path) {
+    let prod = fs::read(prod_sfx).expect("read prod sfx");
+    assert!(prod.len() >= 8, "sfx too short for trailer");
+    let tstart = prod.len() - 8;
+    assert_eq!(
+        &prod[tstart..tstart + 4],
+        b"DKTR",
+        "production SFX trailer magic is not DKTR"
+    );
+    let archive_off =
+        u32::from_le_bytes(prod[tstart + 4..tstart + 8].try_into().unwrap()) as usize;
+
+    let blob = fs::read(bench_blob).expect("read bench blob");
+    let blob_len = blob.len();
+    let mut sfx = blob;
+    sfx.extend_from_slice(&prod[archive_off..]);
+    let n = sfx.len();
+    sfx[n - 4..n].copy_from_slice(&(blob_len as u32).to_le_bytes());
+    fs::write(out, &sfx).expect("write bench sfx");
 }
 
 fn read_aplib_ticks_file(rundir: &Path, tier: &str, run: usize) -> u32 {

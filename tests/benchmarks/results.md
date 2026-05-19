@@ -4,7 +4,7 @@ Synthetic mixed-content payload: 500 KiB (512000 bytes) — text + zeros + LCG-r
 
 Measurement setup:
 
-* Isolated decode time: the stub wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks) in benchmark runs. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).
+* Isolated decode time: a bench-only stub blob (built with `make bench`, never shipped) wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks). The harness swaps this blob onto the packed archive for the timed run, so the shipped stubs carry no instrumentation. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).
 * End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs.
 * Benchmark gating: `#[ignore]` AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file.
 

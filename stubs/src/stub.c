@@ -207,9 +207,18 @@ static u32 rd_u32(const u8 *p)
          | ((u32)p[3] << 24);
 }
 
+#ifdef DKRUNCH_BENCH_TICKS
 /* BIOS timer tick counter: INT 1Ah/AH=00h, returns CX:DX ticks since
  * midnight at ~18.2065 Hz. Available on 8086+ and stable across all
- * doskrunch target tiers. */
+ * doskrunch target tiers.
+ *
+ * Bench builds only: this and the rest of the DKRUNCH_BENCH_TICKS code is
+ * compiled ONLY into the *_bench.bin blobs (`make bench`), never into the
+ * shipped `make all` blobs. Keeping it out of production matters twice
+ * over: the timing path adds ~1.3 KB (which pushes the 8086 blob past its
+ * 8 KB hard ceiling), and it changes extraction behavior (repeat-decode
+ * loop + DKPERF.BIN sidecar) that shipped SFXes must not have. PR #17 uses
+ * the same bench-only-blob pattern with RDTSC for the pentium+ tiers. */
 static u32 bios_ticks_now(void)
 {
     union REGS inregs, outregs;
@@ -217,6 +226,7 @@ static u32 bios_ticks_now(void)
     int86(0x1a, &inregs, &outregs);
     return ((u32)outregs.x.cx << 16) | (u32)outregs.x.dx;
 }
+#endif /* DKRUNCH_BENCH_TICKS */
 
 /* Case-insensitive equality against an upper-case literal. `lit` must
  * be ASCII upper-case; `s` is the name stem we're checking. */
@@ -285,6 +295,7 @@ static int validate_name(const char *s, unsigned slen)
     return 0;
 }
 
+#ifdef DKRUNCH_BENCH_TICKS
 /* Benchmark harness marker payload: BENCH_PA.BIN (8.3-mangled form of
  * bench_payload.bin). Used only to gate optional perf sidecar output
  * in benchmark runs so normal extraction doesn't create extra files. */
@@ -300,12 +311,15 @@ static int is_bench_payload_name(const char *s)
     }
     return i == sizeof(BENCH) - 1;
 }
+#endif /* DKRUNCH_BENCH_TICKS */
 
 int main(int argc, char **argv)
 {
     int self;
     int out;
+#ifdef DKRUNCH_BENCH_TICKS
     int perf_mode = 0;
+#endif
     u32 archive_off;
     long self_size;
     u16 file_count;
@@ -313,7 +327,9 @@ int main(int argc, char **argv)
     u16 flags;
     u16 run_after_offset;
     u8 algo;
+#ifdef DKRUNCH_BENCH_TICKS
     u32 aplib_ticks_total = 0;
+#endif
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
     u8 hcrc[4];
@@ -396,7 +412,9 @@ int main(int argc, char **argv)
             die("unsafe name");
         }
         if (read_exact(self, &attrs, 1) != 0) die("read attrs");
+#ifdef DKRUNCH_BENCH_TICKS
         if (is_bench_payload_name(namebuf)) perf_mode = 1;
+#endif
         if (read_exact(self, ts_b, 4) != 0)   die("read ts");
         ts = rd_u32(ts_b);
         dos_time = (u16)(ts & 0xFFFFu);
@@ -426,12 +444,14 @@ int main(int argc, char **argv)
         for (ci = 0; ci < chunk_count; ci++) {
             u16 csize;
             u16 usize;
+#ifdef DKRUNCH_BENCH_TICKS
             u16 rep;
             u16 reps;
-            unsigned wrote;
-            unsigned produced;
             u32 t0;
             u32 t1;
+#endif
+            unsigned wrote;
+            unsigned produced;
             if (read_exact(self, ch_b, 4) != 0) die("read chunk header");
             csize = rd_u16(ch_b);
             usize = rd_u16(ch_b + 2);
@@ -447,6 +467,7 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
+#ifdef DKRUNCH_BENCH_TICKS
                 reps = (u16)((perf_mode != 0) ? 8u : 1u);
                 for (rep = 0; rep < reps; rep++) {
                     t0 = bios_ticks_now();
@@ -455,6 +476,10 @@ int main(int argc, char **argv)
                     aplib_ticks_total += (u32)(t1 - t0);
                     if (produced != usize) die("aplib size");
                 }
+#else
+                produced = aplib_depack(g_src, g_buf);
+                if (produced != usize) die("aplib size");
+#endif
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
                 }
@@ -561,6 +586,7 @@ int main(int argc, char **argv)
         }
     }
 
+#ifdef DKRUNCH_BENCH_TICKS
     if (algo == 1) {
         if (perf_mode) {
             int perf_h;
@@ -571,6 +597,7 @@ int main(int argc, char **argv)
             }
         }
     }
+#endif /* DKRUNCH_BENCH_TICKS */
 
     _dos_close(self);
     return 0;
