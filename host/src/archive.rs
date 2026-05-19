@@ -237,7 +237,14 @@ impl Archive {
 /// Mirrors `Archive::set_run_after`'s checks; both call sites should
 /// reject the same inputs.
 fn validate_run_after_bytes(cmd: &[u8]) -> Result<(), ArchiveError> {
-    if cmd.is_empty() || cmd.len() > RUN_AFTER_MAX_LEN {
+    // Empty slice → RunAfterEmpty (matches set_run_after's reading
+    // of an empty input). Don't fold it into RunAfterTooLong; the
+    // two cases have different meanings and the CLI maps the error
+    // text differently.
+    if cmd.is_empty() {
+        return Err(ArchiveError::RunAfterEmpty);
+    }
+    if cmd.len() > RUN_AFTER_MAX_LEN {
         return Err(ArchiveError::RunAfterTooLong {
             given: cmd.len(),
             max: RUN_AFTER_MAX_LEN - 1,
@@ -248,8 +255,8 @@ fn validate_run_after_bytes(cmd: &[u8]) -> Result<(), ArchiveError> {
     if cmd[cmd.len() - 1] != 0 {
         return Err(ArchiveError::RunAfterMissingNul);
     }
-    // Empty command (just the NUL) is rejected: matches the
-    // RunAfterEmpty check in set_run_after.
+    // Just the NUL — empty command. Same RunAfterEmpty as above so
+    // callers can pattern-match on a single variant.
     if cmd.len() == 1 {
         return Err(ArchiveError::RunAfterEmpty);
     }
