@@ -17,9 +17,17 @@
 #   aplib_p3.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
 #   lzma_<tier>.bin       wcc -3..-6 -mc + xz-embedded   (NEW; 386..p3, see LZMA section)
 #
-# Each blob dispatches at runtime on the archive's algorithm byte and
-# handles both `stored` (0) and `aplib` (1) chunks; the host returns
-# the matching blob for both algorithms on the requested --target.
+# Each aplib_<tier>.bin dispatches at runtime on the archive's
+# algorithm byte and handles both `stored` (0) and `aplib` (1)
+# chunks; the host returns the matching aplib blob for both
+# algorithms on the requested --target.
+#
+# The lzma_<tier>.bin variants are LZMA-only — they require the
+# archive's algorithm byte to be `lzma` (3) and die loudly on
+# anything else. The host's stub_for() routes `--algo lzma` packs
+# at 386+ to the matching lzma_<tier>.bin and never to an aplib
+# blob; the runtime gate just defends against a hand-crafted
+# mis-targeted archive.
 #
 # Tier-to-depacker mapping rationale:
 #   * 286 reuses aplib_depack_16.asm — the 16-bit decoder is `cpu 8086`

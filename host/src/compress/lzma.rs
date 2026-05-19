@@ -35,7 +35,12 @@
 //! Properties: lc=3, lp=0, pb=2 — the default LZMA1 settings.
 //! Dictionary size: chosen by the caller per chunk, capped by the
 //! stub's available DOS-heap allocation budget at runtime (see
-//! `stubs/src/stub.c` LZMA branch for the runtime cap).
+//! `stubs/src/stub_lzma.c`'s `LZMA_DICT_SIZE_` constant and the
+//! `xz_dec_microlzma_alloc(XZ_SINGLE, LZMA_DICT_SIZE_)` call there
+//! for the runtime cap). Note: the aplib/stored stub at
+//! `stubs/src/stub.c` does not handle LZMA at all — LZMA archives
+//! dispatch to a separate `lzma_<tier>.bin` blob built from
+//! `stub_lzma.c`.
 
 use lzma_rust::{CountingWriter, LZMA2Options, LZMAWriter};
 use std::io::Write;
@@ -391,11 +396,20 @@ mod tests {
             }
         }
         input.truncate(200 * 1024);
-        let lzma_bytes = compress(&input, 64 * 1024).unwrap();
+        // Use the shipped dictionary size (host/src/archive.rs
+        // LZMA_DICT_SIZE = 16 KiB) so the gate reflects what packs
+        // actually ship to DOS — not a hypothetical 64 KiB dict the
+        // stub couldn't decode (the stub's xz_dec_microlzma_alloc
+        // pins this size, and host + stub must agree out-of-band).
+        // If a future change ever raises LZMA_DICT_SIZE both here and
+        // on the stub side, update this constant in sync.
+        let lzma_bytes =
+            compress(&input, crate::archive::LZMA_DICT_SIZE).unwrap();
         let aplib_bytes = crate::compress::aplib::compress(&input).unwrap();
         assert!(
             lzma_bytes.len() < aplib_bytes.len(),
-            "lzma {} should beat aplib {} on the 200 KB mixed-content payload",
+            "lzma {} should beat aplib {} on the 200 KB mixed-content payload \
+             at the shipped 16 KiB dict",
             lzma_bytes.len(),
             aplib_bytes.len()
         );
