@@ -96,4 +96,47 @@ fn main() {
     println!("cargo:rerun-if-changed={}", xz_inc.display());
     println!("cargo:rerun-if-changed={}", xz_cfg.display());
     xz_build.compile("xz_embedded");
+
+    // -- lzsa (Phase 6) --------------------------------------------------
+    //
+    // Vendored under vendor/lzsa; same shape as apultra. We compile the
+    // in-memory encoder + decoder for LZSA2 round-trip parity tests on
+    // the host (the actual stub-side decoder is a hand-tuned ASM port
+    // under stubs/src/lzsa2_depack_*.asm). Files mirror lzsa's Makefile
+    // LIBOBJS minus the CLI front-end (src/lzsa.c) and the stream/file
+    // I/O wrappers — we only need in-memory encode/decode of raw blocks
+    // (LZSA_FLAG_RAW_BLOCK), the doskrunch archive carries its own
+    // per-chunk framing so the lzsa frame header is redundant.
+    let lzsa_root = workspace.join("vendor/lzsa");
+    let lzsa_src = lzsa_root.join("src");
+    let lzsa_divsuf_lib = lzsa_src.join("libdivsufsort/lib");
+    let lzsa_divsuf_inc = lzsa_src.join("libdivsufsort/include");
+
+    let lzsa_sources = [
+        lzsa_src.join("dictionary.c"),
+        lzsa_src.join("expand_block_v1.c"),
+        lzsa_src.join("expand_block_v2.c"),
+        lzsa_src.join("expand_context.c"),
+        lzsa_src.join("expand_inmem.c"),
+        lzsa_src.join("frame.c"),
+        lzsa_src.join("matchfinder.c"),
+        lzsa_src.join("shrink_block_v1.c"),
+        lzsa_src.join("shrink_block_v2.c"),
+        lzsa_src.join("shrink_context.c"),
+        lzsa_src.join("shrink_inmem.c"),
+        lzsa_divsuf_lib.join("divsufsort.c"),
+        lzsa_divsuf_lib.join("divsufsort_utils.c"),
+        lzsa_divsuf_lib.join("sssort.c"),
+        lzsa_divsuf_lib.join("trsort.c"),
+    ];
+
+    let mut lzsa_build = cc::Build::new();
+    lzsa_build
+        .files(&lzsa_sources)
+        .include(&lzsa_src)
+        .include(&lzsa_divsuf_inc)
+        .define("NDEBUG", None)
+        .warnings(false);
+    println!("cargo:rerun-if-changed={}", lzsa_src.display());
+    lzsa_build.compile("lzsa");
 }
