@@ -14,7 +14,7 @@
 #   aplib_pentium.bin     wcc -5 + aplib_depack_p5.asm
 #   aplib_pentium-mmx.bin wcc -5 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
 #   aplib_p2.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
-#   aplib_p3.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
+#   aplib_p3.bin          wcc -6 + aplib_depack_sse.asm  (NEW, SSE MOVUPS block copy)
 #   lzma_<tier>.bin       wcc -3..-6 -mc + xz-embedded   (NEW; 386..p3, see LZMA section)
 #
 # Each aplib_<tier>.bin dispatches at runtime on the archive's
@@ -37,17 +37,21 @@
 #   * 486 reuses aplib_depack_32.asm — `cpu 386`, runs on every 32-bit
 #     CPU. The depacker has no BSWAP / CMPXCHG / etc. opportunities;
 #     the win is again on the C side.
-#   * pentium-mmx/p2/p3 link aplib_depack_mmx.asm — an MMX-accelerated
-#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy only
-#     when the back-reference offset is >= 8 AND length is >= 8 (no
-#     overlap); short matches and overlapping matches (offset < length,
-#     the canonical run-length-on-zeros case) stay on the scalar
-#     `rep movsb` path the pentium tier uses. EMMS is emitted on exit
-#     unconditionally so a future x87 user can't see stale MMX tag
-#     words. The SSE-MOVUPS variant in aplib_depack_sse.asm is NOT
-#     linked — under DOSBox-X cputype=pentium_iii the MOVUPS block
-#     copy hangs on multi-chunk payloads; left for follow-up (see the
-#     p3 rule comment below).
+#   * pentium-mmx/p2 link aplib_depack_mmx.asm — an MMX-accelerated
+#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy when
+#     the back-reference offset is >= 8 AND length is >= 8. The
+#     offset >= 8 floor matches the MOVQ stride, so each 8-byte load
+#     reads bytes the previous 8-byte store already wrote; length >
+#     offset is therefore still safe as long as offset stays at or
+#     above the chunk stride. Matches with offset < 8 (the canonical
+#     compression-of-zeros case) would have MOVQ pull bytes that
+#     hadn't been written yet, so they stay on the scalar `rep movsb`
+#     path — same path the pentium tier uses unconditionally. EMMS
+#     is emitted on exit unconditionally so a future x87 user can't
+#     see stale MMX tag words.
+#   * p3 links aplib_depack_sse.asm — an SSE-accelerated aPLib depacker
+#     with a 16-byte MOVUPS block copy path when offset >= 16 AND
+#     length >= 16, scalar `rep movsb` fallback otherwise.
 #
 # Usage:
 #   make all      # build every shipped tier
@@ -118,17 +122,20 @@ $(SRC)/aplib_depack_p5.obj: $(SRC)/aplib_depack_p5.asm
 $(SRC)/aplib_depack_mmx.obj: $(SRC)/aplib_depack_mmx.asm
 	$(NASM) -f obj -o $@ $<
 
+$(SRC)/aplib_depack_sse.obj: $(SRC)/aplib_depack_sse.asm
+	$(NASM) -f obj -o $@ $<
+
 $(SRC)/lzsa2_depack_16.obj: $(SRC)/lzsa2_depack_16.asm
 	$(NASM) -f obj -o $@ $<
 
 $(SRC)/lzsa2_depack_32.obj: $(SRC)/lzsa2_depack_32.asm
 	$(NASM) -f obj -o $@ $<
 
-# aplib_depack_sse.obj is intentionally not built today; the .asm is
-# kept on disk for follow-up investigation (see the p3-tier comment
-# below for the deferral note). Reintroduce this rule when the SSE
-# path is wired back in.
-
+# exec_dos.asm — cpu 8086, linked into every tier blob (both aplib and
+# lzma families).  The same .obj is reused across all tiers because the
+# wrapper is pure 8086 and has no tier-specific code.
+$(SRC)/exec_dos.obj: $(SRC)/exec_dos.asm
+	$(NASM) -f obj -o $@ $<
 # ----- 8086 tier -------------------------------------------------------
 
 # Compile in $(SRC) so wcc deposits the .obj next to the source.
@@ -142,13 +149,14 @@ $(SRC)/stub.obj: $(SRC)/stub.c
 # the command line: `system dos` picks the DOS-mz output format and
 # pulls in the small-model C runtime; `name` sets the output file;
 # each `file` keyword names an input object.
-$(OUTDIR)/aplib_8086.bin: $(SRC)/stub.obj $(SRC)/aplib_depack_16.obj $(SRC)/lzsa2_depack_16.obj
+$(OUTDIR)/aplib_8086.bin: $(SRC)/stub.obj $(SRC)/aplib_depack_16.obj $(SRC)/lzsa2_depack_16.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_8086.exe \
 	  file $(SRC)/stub.obj \
 	  file $(SRC)/aplib_depack_16.obj \
-	  file $(SRC)/lzsa2_depack_16.obj
+	  file $(SRC)/lzsa2_depack_16.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_8086.exe $(OUTDIR)/aplib_8086.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_8086.bin); \
 	  echo "aplib_8086.bin: $$SZ bytes (target ≤4096, hard ceiling 8192)"; \
@@ -159,13 +167,14 @@ $(OUTDIR)/aplib_8086.bin: $(SRC)/stub.obj $(SRC)/aplib_depack_16.obj $(SRC)/lzsa
 $(SRC)/stub_286.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_286) -fo=stub_286.obj stub.c
 
-$(OUTDIR)/aplib_286.bin: $(SRC)/stub_286.obj $(SRC)/aplib_depack_16.obj $(SRC)/lzsa2_depack_16.obj
+$(OUTDIR)/aplib_286.bin: $(SRC)/stub_286.obj $(SRC)/aplib_depack_16.obj $(SRC)/lzsa2_depack_16.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_286.exe \
 	  file $(SRC)/stub_286.obj \
 	  file $(SRC)/aplib_depack_16.obj \
-	  file $(SRC)/lzsa2_depack_16.obj
+	  file $(SRC)/lzsa2_depack_16.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_286.exe $(OUTDIR)/aplib_286.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_286.bin); \
 	  echo "aplib_286.bin: $$SZ bytes (target ≤4096, hard ceiling 8192)"; \
@@ -179,13 +188,14 @@ $(OUTDIR)/aplib_286.bin: $(SRC)/stub_286.obj $(SRC)/aplib_depack_16.obj $(SRC)/l
 $(SRC)/stub_386.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_386) -DDK_BENCH_TIMING -fo=stub_386.obj stub.c
 
-$(OUTDIR)/aplib_386.bin: $(SRC)/stub_386.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_386.bin: $(SRC)/stub_386.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_386.exe \
 	  file $(SRC)/stub_386.obj \
 	  file $(SRC)/aplib_depack_32.obj \
-	  file $(SRC)/lzsa2_depack_32.obj
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_386.exe $(OUTDIR)/aplib_386.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_386.bin); \
 	  echo "aplib_386.bin: $$SZ bytes (target ≤6144, hard ceiling 10240)"; \
@@ -196,13 +206,14 @@ $(OUTDIR)/aplib_386.bin: $(SRC)/stub_386.obj $(SRC)/aplib_depack_32.obj $(SRC)/l
 $(SRC)/stub_486.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_486) -DDK_BENCH_TIMING -fo=stub_486.obj stub.c
 
-$(OUTDIR)/aplib_486.bin: $(SRC)/stub_486.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_486.bin: $(SRC)/stub_486.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_486.exe \
 	  file $(SRC)/stub_486.obj \
 	  file $(SRC)/aplib_depack_32.obj \
-	  file $(SRC)/lzsa2_depack_32.obj
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_486.exe $(OUTDIR)/aplib_486.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_486.bin); \
 	  echo "aplib_486.bin: $$SZ bytes (target ≤6144, hard ceiling 10240)"; \
@@ -213,13 +224,14 @@ $(OUTDIR)/aplib_486.bin: $(SRC)/stub_486.obj $(SRC)/aplib_depack_32.obj $(SRC)/l
 $(SRC)/stub_p5.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -DDK_BENCH_TIMING -fo=stub_p5.obj stub.c
 
-$(OUTDIR)/aplib_pentium.bin: $(SRC)/stub_p5.obj $(SRC)/aplib_depack_p5.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_pentium.bin: $(SRC)/stub_p5.obj $(SRC)/aplib_depack_p5.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_pentium.exe \
 	  file $(SRC)/stub_p5.obj \
 	  file $(SRC)/aplib_depack_p5.obj \
-	  file $(SRC)/lzsa2_depack_32.obj
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_pentium.exe $(OUTDIR)/aplib_pentium.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium.bin); \
 	  echo "aplib_pentium.bin: $$SZ bytes (target ≤8192, hard ceiling 12288)"; \
@@ -237,13 +249,14 @@ $(OUTDIR)/aplib_pentium.bin: $(SRC)/stub_p5.obj $(SRC)/aplib_depack_p5.obj $(SRC
 $(SRC)/stub_pmmx.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -fo=stub_pmmx.obj stub.c
 
-$(OUTDIR)/aplib_pentium-mmx.bin: $(SRC)/stub_pmmx.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_pentium-mmx.bin: $(SRC)/stub_pmmx.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_pentium-mmx.exe \
 	  file $(SRC)/stub_pmmx.obj \
 	  file $(SRC)/aplib_depack_mmx.obj \
-	  file $(SRC)/lzsa2_depack_32.obj
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_pentium-mmx.exe $(OUTDIR)/aplib_pentium-mmx.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium-mmx.bin); \
 	  echo "aplib_pentium-mmx.bin: $$SZ bytes (target ≤8192, hard ceiling 12288)"; \
@@ -258,13 +271,14 @@ $(OUTDIR)/aplib_pentium-mmx.bin: $(SRC)/stub_pmmx.obj $(SRC)/aplib_depack_mmx.ob
 $(SRC)/stub_p6.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p6.obj stub.c
 
-$(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_p2.exe \
 	  file $(SRC)/stub_p6.obj \
 	  file $(SRC)/aplib_depack_mmx.obj \
-	  file $(SRC)/lzsa2_depack_32.obj
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_p2.exe $(OUTDIR)/aplib_p2.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_p2.bin); \
 	  echo "aplib_p2.bin: $$SZ bytes (target ≤8192, hard ceiling 12288)"; \
@@ -272,26 +286,25 @@ $(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lz
 
 # ----- p3 tier ---------------------------------------------------------
 #
-# wcc -6 codegen + MMX aplib depacker. The SSE depacker variant lives
-# in stubs/src/aplib_depack_sse.asm but is NOT linked in — under
-# DOSBox-X cputype=pentium_iii the MOVUPS-based block copy hangs on
-# multi-chunk payloads (the small-fixture gate passes, the 500 KiB
-# multi-chunk gate doesn't). NASM disassembly of the loop encoding
-# looks correct, so the symptom is most likely a DOSBox-X SSE
-# emulation gap rather than a depacker bug; left for follow-up
-# investigation. p3 still benefits from wcc -6 codegen for the
-# surrounding C housekeeping and the MMX path for long matches.
+# wcc -6 codegen + SSE aplib depacker. The SSE path copies 16 bytes per
+# MOVUPS when match offset >= 16 AND length >= 16. The offset >= 16
+# floor matches the MOVUPS stride, so each 16-byte load reads bytes
+# the previous 16-byte store already wrote; length > offset is still
+# safe as long as offset stays at or above the chunk stride. Matches
+# with offset < 16 stay on scalar `rep movsb`, which copies byte-at-
+# a-time and correctly handles the classical LZ77 run-overlap case.
 
 $(SRC)/stub_p3.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p3.obj stub.c
 
-$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj
+$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_sse.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_p3.exe \
 	  file $(SRC)/stub_p3.obj \
-	  file $(SRC)/aplib_depack_mmx.obj \
-	  file $(SRC)/lzsa2_depack_32.obj
+	  file $(SRC)/aplib_depack_sse.obj \
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_p3.exe $(OUTDIR)/aplib_p3.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_p3.bin); \
 	  echo "aplib_p3.bin: $$SZ bytes (target ≤10240, hard ceiling 14336)"; \
@@ -351,13 +364,14 @@ $(SRC)/xz_crc32_386.obj: $(XZ_SRC)/xz_crc32.c
 $(SRC)/xz_dec_lzma2_386.obj: $(XZ_SRC)/xz_dec_lzma2.c
 	$(WCC) $(XZ_CFLAGS_386) -fo=$@ $<
 
-$(OUTDIR)/lzma_386.bin: $(SRC)/stub_lzma_386.obj $(SRC)/xz_crc32_386.obj $(SRC)/xz_dec_lzma2_386.obj
+$(OUTDIR)/lzma_386.bin: $(SRC)/stub_lzma_386.obj $(SRC)/xz_crc32_386.obj $(SRC)/xz_dec_lzma2_386.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/lzma_386.exe \
 	  file $(SRC)/stub_lzma_386.obj \
 	  file $(SRC)/xz_crc32_386.obj \
-	  file $(SRC)/xz_dec_lzma2_386.obj
+	  file $(SRC)/xz_dec_lzma2_386.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/lzma_386.exe $(OUTDIR)/lzma_386.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_386.bin); \
 	  echo "lzma_386.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
@@ -373,13 +387,14 @@ $(SRC)/xz_crc32_486.obj: $(XZ_SRC)/xz_crc32.c
 $(SRC)/xz_dec_lzma2_486.obj: $(XZ_SRC)/xz_dec_lzma2.c
 	$(WCC) $(XZ_CFLAGS_486) -fo=$@ $<
 
-$(OUTDIR)/lzma_486.bin: $(SRC)/stub_lzma_486.obj $(SRC)/xz_crc32_486.obj $(SRC)/xz_dec_lzma2_486.obj
+$(OUTDIR)/lzma_486.bin: $(SRC)/stub_lzma_486.obj $(SRC)/xz_crc32_486.obj $(SRC)/xz_dec_lzma2_486.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/lzma_486.exe \
 	  file $(SRC)/stub_lzma_486.obj \
 	  file $(SRC)/xz_crc32_486.obj \
-	  file $(SRC)/xz_dec_lzma2_486.obj
+	  file $(SRC)/xz_dec_lzma2_486.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/lzma_486.exe $(OUTDIR)/lzma_486.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_486.bin); \
 	  echo "lzma_486.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
@@ -395,13 +410,14 @@ $(SRC)/xz_crc32_p5.obj: $(XZ_SRC)/xz_crc32.c
 $(SRC)/xz_dec_lzma2_p5.obj: $(XZ_SRC)/xz_dec_lzma2.c
 	$(WCC) $(XZ_CFLAGS_P5) -fo=$@ $<
 
-$(OUTDIR)/lzma_pentium.bin: $(SRC)/stub_lzma_p5.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj
+$(OUTDIR)/lzma_pentium.bin: $(SRC)/stub_lzma_p5.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/lzma_pentium.exe \
 	  file $(SRC)/stub_lzma_p5.obj \
 	  file $(SRC)/xz_crc32_p5.obj \
-	  file $(SRC)/xz_dec_lzma2_p5.obj
+	  file $(SRC)/xz_dec_lzma2_p5.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/lzma_pentium.exe $(OUTDIR)/lzma_pentium.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_pentium.bin); \
 	  echo "lzma_pentium.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
@@ -411,13 +427,14 @@ $(OUTDIR)/lzma_pentium.bin: $(SRC)/stub_lzma_p5.obj $(SRC)/xz_crc32_p5.obj $(SRC
 $(SRC)/stub_lzma_pmmx.obj: $(SRC)/stub_lzma.c
 	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -5 -fo=$@ $<
 
-$(OUTDIR)/lzma_pentium-mmx.bin: $(SRC)/stub_lzma_pmmx.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj
+$(OUTDIR)/lzma_pentium-mmx.bin: $(SRC)/stub_lzma_pmmx.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/lzma_pentium-mmx.exe \
 	  file $(SRC)/stub_lzma_pmmx.obj \
 	  file $(SRC)/xz_crc32_p5.obj \
-	  file $(SRC)/xz_dec_lzma2_p5.obj
+	  file $(SRC)/xz_dec_lzma2_p5.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/lzma_pentium-mmx.exe $(OUTDIR)/lzma_pentium-mmx.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_pentium-mmx.bin); \
 	  echo "lzma_pentium-mmx.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
@@ -433,13 +450,14 @@ $(SRC)/xz_crc32_p6.obj: $(XZ_SRC)/xz_crc32.c
 $(SRC)/xz_dec_lzma2_p6.obj: $(XZ_SRC)/xz_dec_lzma2.c
 	$(WCC) $(XZ_CFLAGS_P6) -fo=$@ $<
 
-$(OUTDIR)/lzma_p2.bin: $(SRC)/stub_lzma_p6.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_dec_lzma2_p6.obj
+$(OUTDIR)/lzma_p2.bin: $(SRC)/stub_lzma_p6.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_dec_lzma2_p6.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/lzma_p2.exe \
 	  file $(SRC)/stub_lzma_p6.obj \
 	  file $(SRC)/xz_crc32_p6.obj \
-	  file $(SRC)/xz_dec_lzma2_p6.obj
+	  file $(SRC)/xz_dec_lzma2_p6.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/lzma_p2.exe $(OUTDIR)/lzma_p2.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_p2.bin); \
 	  echo "lzma_p2.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
@@ -449,13 +467,14 @@ $(OUTDIR)/lzma_p2.bin: $(SRC)/stub_lzma_p6.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_
 $(SRC)/stub_lzma_p3.obj: $(SRC)/stub_lzma.c
 	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -6 -fo=$@ $<
 
-$(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_dec_lzma2_p6.obj
+$(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_dec_lzma2_p6.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/lzma_p3.exe \
 	  file $(SRC)/stub_lzma_p3.obj \
 	  file $(SRC)/xz_crc32_p6.obj \
-	  file $(SRC)/xz_dec_lzma2_p6.obj
+	  file $(SRC)/xz_dec_lzma2_p6.obj \
+	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/lzma_p3.exe $(OUTDIR)/lzma_p3.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/lzma_p3.bin); \
 	  echo "lzma_p3.bin: $$SZ bytes (target ≤20480, hard ceiling 28672)"; \

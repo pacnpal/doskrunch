@@ -67,11 +67,19 @@ typedef unsigned long  u32;
 static u8 g_lzma_src[LZMA_SRC_SIZE];
 static u8 g_lzma_buf[LZMA_BUF_SIZE];
 
-/* Run-after-extract command buffer (Phase 6). Matches
- * host/src/archive.rs::RUN_AFTER_MAX_LEN and the stub.c constant of
- * the same name. */
+/* Run-after-extract command buffer (v1.1).
+ * Matches host/src/archive.rs::RUN_AFTER_MAX_LEN and stub.c constant.
+ * Read from archive at archive_off+run_after_offset after extraction. */
 #define RUN_AFTER_BUF 128u
 static char g_run_after[RUN_AFTER_BUF];
+
+/* EXEC (INT 21h/4Bh) parameter block — same layout as stub.c.
+ * Compact model: g_exec_pb is in DGROUP (same DS); FP_OFF extracts
+ * the near offset correctly from both near and far pointers. */
+static u16  g_exec_pb[7];
+
+/* Counted DOS command line for the EXEC parameter block. */
+static char g_exec_cmdline[130];
 
 /* Archive header flag bits. Must match host/src/archive.rs::flags. */
 #define FLAG_RUN_AFTER     0x0001u
@@ -116,6 +124,19 @@ static void write_decode_ticks(u32 ticks)
     _dos_close(h);
 }
 #endif
+
+/* INT 21h/4Bh EXEC primitive — implemented in stubs/src/exec_dos.asm.
+ * Same interface as stub.c: prog_si and pb_di are near DS offsets.
+ * In compact model (-mc) the pointers are far, but the static arrays
+ * live in DGROUP so FP_OFF() extracts the correct near offset. */
+extern unsigned exec_dos(u16 prog_si, u16 pb_di);
+#pragma aux exec_dos "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
+
+static u16 get_ds(void);
+#pragma aux get_ds = "mov ax, ds" value [ax] modify exact [ax];
+
+static u16 get_psp_seg(void);
+#pragma aux get_psp_seg = "mov ah, 0x51" "int 0x21" value [bx] modify exact [ax bx];
 
 static void puts2(const char *s)
 {
@@ -407,14 +428,58 @@ int main(int argc, char **argv)
 
     xz_dec_microlzma_end(dec);
 
-    /* Run-after-extract: deferred to v1.1 for the same stub-budget
-     * reason documented in stubs/src/stub.c (system() pulls in
-     * ~4.5 KiB of COMMAND.COM lookup + C-runtime spawn machinery).
-     * The host writes the flag + offset + command bytes; this stub
-     * ignores them. */
-    (void)flags;
-    (void)run_after_offset;
-    (void)g_run_after;
+    /* Run-after-extract (v1.1): INT 21h/4Bh EXEC. Same logic as
+     * stub.c; compact-model pointer differences are absorbed by
+     * FP_OFF() which works on both near and far pointers. */
+    if (flags & FLAG_RUN_AFTER) {
+        unsigned got = 0;
+        char *space;
+        char *args;
+        unsigned args_len;
+        u16 ds_val;
+        u16 psp;
+
+        if (lseek(self, (long)archive_off + (long)run_after_offset, SEEK_SET) != -1L
+         && _dos_read(self, g_run_after, RUN_AFTER_BUF, &got) == 0
+         && got > 0u) {
+
+            g_run_after[RUN_AFTER_BUF - 1] = '\0';
+
+            space = (char *)memchr(g_run_after, ' ', RUN_AFTER_BUF);
+            if (space != 0) {
+                *space = '\0';
+                args = space + 1;
+            } else {
+                args = g_run_after + (unsigned)strlen(g_run_after);
+            }
+            args_len = (unsigned)strlen(args);
+            if (args_len > 126u) args_len = 126u;
+
+            if (args_len > 0u) {
+                g_exec_cmdline[0] = (char)(args_len + 1u);
+                g_exec_cmdline[1] = ' ';
+                memcpy(&g_exec_cmdline[2], args, args_len);
+                g_exec_cmdline[(unsigned)args_len + 2u] = '\r';
+            } else {
+                g_exec_cmdline[0] = '\0';
+                g_exec_cmdline[1] = '\r';
+            }
+
+            ds_val = get_ds();
+            psp    = get_psp_seg();
+            g_exec_pb[0] = 0u;
+            g_exec_pb[1] = (u16)FP_OFF(g_exec_cmdline);
+            g_exec_pb[2] = ds_val;
+            g_exec_pb[3] = 0x005Cu;
+            g_exec_pb[4] = psp;
+            g_exec_pb[5] = 0x006Cu;
+            g_exec_pb[6] = psp;
+
+            _dos_close(self);
+            exec_dos((u16)FP_OFF(g_run_after), (u16)FP_OFF(g_exec_pb));
+            return 0;
+        }
+    }
 
     _dos_close(self);
     return 0;

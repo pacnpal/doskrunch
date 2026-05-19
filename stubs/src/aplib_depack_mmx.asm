@@ -1,12 +1,8 @@
 ;  aplib_depack_mmx.asm — MMX-accelerated 32-bit-register aPLib depacker
-;  for the doskrunch pentium-mmx, p2, and p3 stubs (bits 16, cpu
-;  pentium). Linked into stubs/blobs/aplib_pentium-mmx.bin,
-;  aplib_p2.bin, and aplib_p3.bin. Exports the same `aplib_depack`
-;  symbol as the 8086/386/p5 ports; the Makefile picks the .obj per
-;  tier. (p3 also has aplib_depack_sse.asm on disk for follow-up
-;  investigation, but it is intentionally not linked today; see the
-;  p3 rule comment in stubs/Makefile for the DOSBox-X cputype=
-;  pentium_iii hang note.)
+;  for the doskrunch pentium-mmx and p2 stubs (bits 16, cpu pentium).
+;  Linked into stubs/blobs/aplib_pentium-mmx.bin and aplib_p2.bin.
+;  Exports the same `aplib_depack` symbol as the 8086/386/p5/sse ports;
+;  the Makefile picks the .obj per tier.
 ;
 ;  Source lineage:
 ;    Forked from stubs/src/aplib_depack_p5.asm (the speed-opt port of
