@@ -225,6 +225,50 @@ impl Archive {
         self.flags |= flags::RUN_AFTER;
         Ok(())
     }
+}
+
+/// Validate the on-wire bytes of a run-after command: NUL-terminated,
+/// at least one printable-ASCII byte before the NUL, no embedded NULs,
+/// total length within `RUN_AFTER_MAX_LEN`. Used by both `Archive::write`
+/// (defending against a caller who set `run_after_command` directly,
+/// bypassing `set_run_after`'s validation) and `Archive::read` (so a
+/// hostile archive can't smuggle garbage past the parser).
+///
+/// Mirrors `Archive::set_run_after`'s checks; both call sites should
+/// reject the same inputs.
+fn validate_run_after_bytes(cmd: &[u8]) -> Result<(), ArchiveError> {
+    if cmd.is_empty() || cmd.len() > RUN_AFTER_MAX_LEN {
+        return Err(ArchiveError::RunAfterTooLong {
+            given: cmd.len(),
+            max: RUN_AFTER_MAX_LEN - 1,
+        });
+    }
+    // Must end in the trailing NUL the stub uses to terminate the
+    // command line.
+    if cmd[cmd.len() - 1] != 0 {
+        return Err(ArchiveError::RunAfterMissingNul);
+    }
+    // Empty command (just the NUL) is rejected: matches the
+    // RunAfterEmpty check in set_run_after.
+    if cmd.len() == 1 {
+        return Err(ArchiveError::RunAfterEmpty);
+    }
+    let body = &cmd[..cmd.len() - 1];
+    // No embedded NULs in the body — the loop above guarantees there's
+    // one at the end, but a malformed archive could carry more.
+    if body.contains(&0) {
+        return Err(ArchiveError::RunAfterContainsNul);
+    }
+    // Same printable-ASCII gate set_run_after enforces.
+    for &b in body {
+        if !(0x20..=0x7E).contains(&b) {
+            return Err(ArchiveError::RunAfterBadByte(b));
+        }
+    }
+    Ok(())
+}
+
+impl Archive {
 
     /// Sum of every file's uncompressed and compressed sizes. The
     /// public `pack` path validates the cumulative total fits in u32
@@ -267,16 +311,15 @@ impl Archive {
         // through encode_header_with directly instead.
         let (effective_flags, run_after_offset) = match &self.run_after_command {
             Some(cmd) => {
-                if cmd.len() > RUN_AFTER_MAX_LEN {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "run-after: command bytes {} exceed RUN_AFTER_MAX_LEN ({})",
-                            cmd.len(),
-                            RUN_AFTER_MAX_LEN
-                        ),
-                    ));
-                }
+                // `run_after_command` is a public field, so callers
+                // can bypass `set_run_after`'s validation and stuff
+                // arbitrary bytes here. Validate before serializing
+                // so we never write a command the stub can't safely
+                // execute (missing NUL, empty, embedded NULs,
+                // non-printable bytes, oversize).
+                validate_run_after_bytes(cmd).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, e.to_string())
+                })?;
                 let header_size: u32 = 25;
                 let files_size: u32 = self
                     .files
@@ -471,15 +514,12 @@ impl Archive {
                     break;
                 }
             }
-            // Validate stricter than just "ends in NUL": every byte
-            // before the NUL must be printable ASCII. Mirrors the
-            // set_run_after validation so a parse-time round-trip is
-            // symmetric.
-            for &b in &buf[..buf.len() - 1] {
-                if !(0x20..=0x7E).contains(&b) {
-                    return Err(ArchiveError::RunAfterBadByte(b));
-                }
-            }
+            // Run the same byte-level validation `Archive::write` and
+            // `set_run_after` apply. A hostile archive could carry an
+            // empty command (just the NUL), embedded NULs, or
+            // non-printable bytes that would corrupt the eventual
+            // stub-side EXEC; reject at parse time.
+            validate_run_after_bytes(&buf)?;
             Some(buf)
         } else {
             None
@@ -1140,6 +1180,7 @@ pub enum ArchiveError {
     },
     RunAfterEmpty,
     RunAfterContainsNul,
+    RunAfterMissingNul,
     RunAfterTooLong {
         given: usize,
         max: usize,
@@ -1221,7 +1262,10 @@ impl std::fmt::Display for ArchiveError {
             ),
             Self::RunAfterEmpty => write!(f, "run-after command must not be empty"),
             Self::RunAfterContainsNul => {
-                write!(f, "run-after command contains a NUL byte")
+                write!(f, "run-after command contains an embedded NUL byte")
+            }
+            Self::RunAfterMissingNul => {
+                write!(f, "run-after command bytes don't end in the required NUL terminator")
             }
             Self::RunAfterTooLong { given, max } => write!(
                 f,
@@ -1558,6 +1602,69 @@ mod tests {
         let parsed = Archive::read(&mut r).unwrap();
         assert!(parsed.run_after_command.is_none());
         assert_eq!(parsed.flags & flags::RUN_AFTER, 0);
+    }
+
+    #[test]
+    fn write_rejects_directly_set_invalid_run_after_bytes() {
+        // run_after_command is a public field, so a caller can stuff
+        // arbitrary bytes there and bypass set_run_after. write()
+        // should refuse rather than serializing garbage that the
+        // stub can't safely execute.
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"x", STORED_TEST_CHUNK).unwrap()];
+
+        // Missing trailing NUL.
+        a.run_after_command = Some(b"BAD".to_vec());
+        let mut buf = Vec::new();
+        let err = a.write(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Embedded NUL in the body.
+        a.run_after_command = Some(b"GO\0BAD\0".to_vec());
+        let err = a.write(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Just the NUL — empty command.
+        a.run_after_command = Some(b"\0".to_vec());
+        let err = a.write(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Non-printable byte (tab) in the body.
+        a.run_after_command = Some(b"A\tB\0".to_vec());
+        let err = a.write(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn read_rejects_hostile_run_after_bytes() {
+        // Hand-craft an archive with a valid header + valid file
+        // record but a malformed command (just the NUL = empty
+        // command). The reader should bail rather than returning
+        // an Archive whose run_after_command is meaningless.
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        let file = build_stored_entry("A.TXT", 0x20, 0, b"x", STORED_TEST_CHUNK).unwrap();
+        a.files = vec![file];
+        a.set_run_after("RUN.BAT").unwrap();
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+
+        // `Archive::write` computes the run_after_offset locally and
+        // writes it into the header without back-populating the field
+        // on `self`, so read it back from bytes 19-20 of the buffer.
+        let off = u16::from_le_bytes([buf[19], buf[20]]) as usize;
+        // Truncate everything from the command onward and write a
+        // single NUL — that's the "empty command" case we want to
+        // confirm the parser rejects.
+        buf.truncate(off);
+        buf.push(0);
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(
+            matches!(err, ArchiveError::RunAfterEmpty),
+            "got {err:?}"
+        );
     }
 
     #[test]
