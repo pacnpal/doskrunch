@@ -42,8 +42,38 @@ the symptom is most likely a DOSBox-X SSE emulation gap rather than a
 depacker bug. Verifying on a real Pentium III box or a different
 emulator would prove or disprove that. Left for follow-up.
 
-LZMA stub blobs (`lzma_<tier>.bin` for 386 .. p3) are NOT unified
-with the aplib blob via runtime dispatch — the LZMA range decoder and
-its dictionary buffer don't fit alongside the aplib small-model BSS,
-so they get separate per-tier blobs and the host selects the LZMA
-blob when `--algo lzma`. Those land later in Phase 5.
+LZMA stub blobs ship now for 386..p3. They are NOT unified with the
+aplib blob via runtime dispatch — the LZMA range decoder state, the
+LZMA dictionary buffer, and the per-chunk scratch buffers don't fit
+alongside the aplib stub's small-model BSS, so the LZMA stub is its
+own program. The host's `stub_for` selects `lzma_<tier>.bin` when
+`--algo lzma --target <tier>` is requested.
+
+LZMA stubs use Open Watcom's compact memory model (`-mc`, near code,
+far data) — `struct xz_dec_microlzma` alone exceeds small-model
+malloc's 32 KB per-allocation cap, so the decoder state lives in a
+data segment distinct from the stub's BSS. The aplib stubs stay on
+small (`-ms`).
+
+| Blob | wcc flag | Memory model | Linked objects | Size budget |
+|------|----------|--------------|----------------|-------------|
+| `lzma_386.bin`          | `-3` | compact (`-mc`) | `stub_lzma.obj` + `xz_crc32.obj` + `xz_dec_lzma2.obj` | ≤18 KB target / 24 KB hard |
+| `lzma_486.bin`          | `-4` | compact (`-mc`) | same | ≤18 KB target / 24 KB hard |
+| `lzma_pentium.bin`      | `-5` | compact (`-mc`) | same | ≤18 KB target / 24 KB hard |
+| `lzma_pentium-mmx.bin`  | `-5` | compact (`-mc`) | same | ≤18 KB target / 24 KB hard |
+| `lzma_p2.bin`           | `-6` | compact (`-mc`) | same | ≤18 KB target / 24 KB hard |
+| `lzma_p3.bin`           | `-6` | compact (`-mc`) | same | ≤20 KB target / 28 KB hard |
+
+The LZMA blob hard ceilings (24/28 KB) intentionally exceed the
+per-tier aplib ceilings (10/12/14 KB). The LZMA decoder + dictionary
++ scratch buffers are inherently larger than the aPLib decoder, and
+treating the LZMA stub as its own size class is the explicit Phase 5
+contract — opting into `--algo lzma` is opting into a bigger stub.
+The aplib stubs continue to enforce their original per-tier ceilings
+in `stubs/Makefile`.
+
+A 16-bit C portability note: the vendored xz-embedded source has two
+`/* doskrunch patch: */`-marked changes in `xz_dec_lzma2.c` for `1 <<
+24` and `3U << 30`, both of which are undefined when `int` is 16 bits
+(Open Watcom's default in real mode). The patches are local; the rest
+of xz-embedded is unchanged from upstream.

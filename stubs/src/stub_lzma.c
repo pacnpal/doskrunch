@@ -10,32 +10,34 @@
  * blob only for `--algo lzma` packs, so the runtime gate just defends
  * against a manually-constructed mis-targeted archive.
  *
- * Memory model: small (DS = SS, code + data ≤ 64 KB). The LZMA
- * decoder state and the per-chunk scratch buffers all live in BSS so
- * they don't take up disk space in the .EXE. xz-embedded calls
- * `kmalloc` once at startup for the decoder state; in our DOS small-
- * model build that's a near-pointer allocation inside DS. The dict is
- * the output buffer itself (XZ_SINGLE mode), so there's no separate
- * dictionary allocation. Total static BSS:
+ * Memory model: compact (-mc). Code is near (single code segment ≤ 64
+ * KB) and data is far (multiple data segments, far pointers everywhere).
+ * Picked over small (-ms) because `struct xz_dec_microlzma` alone is
+ * larger than small-model malloc's 32 KB per-allocation cap with the
+ * default lc/lp/pb tables, so the decoder state needs to live in a
+ * data segment distinct from the stub's own BSS. Under -mc, bare
+ * `uint8_t *` in vendor/xz-embedded/ becomes `uint8_t __far *`
+ * automatically and `kmalloc` (→ `malloc`) returns a far pointer out
+ * of the far heap, so we don't have to patch the vendor source or wrap
+ * the xz_dec_microlzma_* entry points.
  *
- *   g_lzma_src (compressed in)   LZMA_MAX_COMPRESSED_CHUNK (~17 KiB)
- *   g_lzma_buf (uncompressed out / SINGLE-mode workspace)  16 KiB
- *   xz_dec_microlzma state       allocated via kmalloc (~30 KiB)
- *   stub C runtime + stack       a few KiB
+ *   g_lzma_src (compressed in, this stub's BSS, far)  LZMA_MAX_COMPRESSED_CHUNK (~17 KiB)
+ *   g_lzma_buf (uncompressed out / SINGLE-mode dict)  16 KiB
+ *   xz_dec_microlzma state      kmalloc'd, separate data segment
+ *   stub C runtime + stack      a few KiB in DGROUP
  *
- * That's ~63 KiB before kmalloc; the kmalloc + Watcom stack live in
- * what's left of DS. Tight but workable in small model with -3.
+ * The static BSS pair (`g_lzma_src` + `g_lzma_buf` ≈ 33 KiB) lives in
+ * its own far data segment under -mc; the decoder state and the
+ * Watcom stack land in separate segments, so we no longer have to fit
+ * everything in a single 64 KiB DS.
  *
- * If a future change pushes it past the DS limit, the next step is
- * either:
- *   - shrink g_lzma_src / g_lzma_buf to 8 KiB each (host needs a
- *     matching LZMA_CHUNK_INPUT cut),
- *   - switch the decoder state allocation to far-malloc + a Watcom
- *     far-pointer wrapper around xz_dec_microlzma_*,
- *   - or move to compact memory model (-mc) so the decoder state and
- *     scratch buffers can each have their own data segment.
+ * If a future change pushes a single allocation past 64 KiB, the next
+ * step is either to cut LZMA_CHUNK_INPUT (so g_lzma_src/g_lzma_buf
+ * shrink) or wrap xz_dec_microlzma_* with a huge-pointer ($DS:0)
+ * helper. Moving to large (-ml) is the other lever but pulls in the
+ * far-call C runtime, which costs stub bytes.
  *
- * Build: Open Watcom v2 + cc-rs'd xz-embedded C, real-mode DOS, -3 -ms
+ * Build: Open Watcom v2 + cc-rs'd xz-embedded C, real-mode DOS, -3 -mc
  * -os, linked with vendor/xz-embedded/{xz_crc32,xz_dec_lzma2}.obj.
  */
 

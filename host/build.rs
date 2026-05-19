@@ -90,6 +90,10 @@ fn main() {
         // right one for the kernel-style C99 fallthrough attribute.
         .warnings(false);
     println!("cargo:rerun-if-changed={}", xz_lib.display());
+    // xz_inc holds the public headers (xz.h, xz_private.h, etc) that
+    // both xz_dec_lzma2.c and our FFI bindings include. Header-only
+    // changes must trigger a rebuild of the static lib too.
+    println!("cargo:rerun-if-changed={}", xz_inc.display());
     println!("cargo:rerun-if-changed={}", xz_cfg.display());
     xz_build.compile("xz_embedded");
 }

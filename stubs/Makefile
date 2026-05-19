@@ -5,15 +5,17 @@
 # see ./Dockerfile). Builds one stub per (algorithm, CPU tier) and drops
 # the result into blobs/<algo>_<tier>.bin.
 #
-# Phase 5 ships eight blobs (was three in Phase 3):
-#   aplib_8086.bin       wcc -0 + aplib_depack_16.asm
-#   aplib_286.bin        wcc -2 + aplib_depack_16.asm   (NEW)
-#   aplib_386.bin        wcc -3 + aplib_depack_32.asm
-#   aplib_486.bin        wcc -4 + aplib_depack_32.asm   (NEW)
-#   aplib_pentium.bin    wcc -5 + aplib_depack_p5.asm
-#   aplib_pentium-mmx.bin wcc -5 + aplib_depack_p5.asm  (NEW)
-#   aplib_p2.bin         wcc -6 + aplib_depack_p5.asm   (NEW)
-#   aplib_p3.bin         wcc -6 + aplib_depack_p5.asm   (NEW)
+# Phase 5 ships eight aplib blobs (was three in Phase 3) plus six LZMA
+# blobs:
+#   aplib_8086.bin        wcc -0 + aplib_depack_16.asm
+#   aplib_286.bin         wcc -2 + aplib_depack_16.asm   (NEW)
+#   aplib_386.bin         wcc -3 + aplib_depack_32.asm
+#   aplib_486.bin         wcc -4 + aplib_depack_32.asm   (NEW)
+#   aplib_pentium.bin     wcc -5 + aplib_depack_p5.asm
+#   aplib_pentium-mmx.bin wcc -5 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
+#   aplib_p2.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
+#   aplib_p3.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
+#   lzma_<tier>.bin       wcc -3..-6 -mc + xz-embedded   (NEW; 386..p3, see LZMA section)
 #
 # Each blob dispatches at runtime on the archive's algorithm byte and
 # handles both `stored` (0) and `aplib` (1) chunks; the host returns
@@ -27,12 +29,17 @@
 #   * 486 reuses aplib_depack_32.asm — `cpu 386`, runs on every 32-bit
 #     CPU. The depacker has no BSWAP / CMPXCHG / etc. opportunities;
 #     the win is again on the C side.
-#   * pentium-mmx/p2/p3 reuse aplib_depack_p5.asm. MMX/SSE acceleration
-#     of the aPLib depacker is deliberately deferred: aPLib literals
-#     are single-byte movsb and match copies use rep movsb over ranges
-#     where offset < length (legitimate overlap), so MOVQ/MOVAPS would
-#     break correctness on the hot path. Same Karpathy "measure before
-#     optimizing" stance Phase 3 took for the p5 port's U/V scheduling.
+#   * pentium-mmx/p2/p3 link aplib_depack_mmx.asm — an MMX-accelerated
+#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy only
+#     when the back-reference offset is >= 8 AND length is >= 8 (no
+#     overlap); short matches and overlapping matches (offset < length,
+#     the canonical run-length-on-zeros case) stay on the scalar
+#     `rep movsb` path the pentium tier uses. EMMS is emitted on exit
+#     unconditionally so a future x87 user can't see stale MMX tag
+#     words. The SSE-MOVUPS variant in aplib_depack_sse.asm is NOT
+#     linked — under DOSBox-X cputype=pentium_iii the MOVUPS block
+#     copy hangs on multi-chunk payloads; left for follow-up (see the
+#     p3 rule comment below).
 #
 # Usage:
 #   make all      # build every shipped tier

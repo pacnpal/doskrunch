@@ -1,10 +1,15 @@
 //! Host-side LZMA codec for doskrunch.
 //!
 //! Encoder: lzma-rust (Apache-2.0, pure Rust). Uses
-//! `LZMAWriter::new_no_header` which produces a raw LZMA1 stream with
-//! no 13-byte properties header and no end-of-stream marker — exactly
-//! the wire format xz-embedded's MicroLZMA decoder expects, modulo a
-//! one-byte transformation at the start of the stream (see below).
+//! `LZMAWriter::new(counting, &options, use_header=false,
+//! use_end_marker=false, Some(uncompressed_size))`, which produces a
+//! raw LZMA1 stream with no 13-byte properties header and no
+//! end-of-stream marker — exactly the wire format xz-embedded's
+//! MicroLZMA decoder expects, modulo a one-byte transformation at the
+//! start of the stream (see below). The `use_header` flag is passed
+//! through explicitly rather than going through the
+//! `LZMAWriter::new_no_header` helper so the false/false pair is
+//! visible at the call site.
 //!
 //! Decoder: the vendored xz-embedded C library, compiled into the
 //! `xz_embedded` static lib by `host/build.rs`. We call
@@ -35,6 +40,7 @@
 use lzma_rust::{CountingWriter, LZMA2Options, LZMAWriter};
 use std::io::Write;
 use std::os::raw::c_int;
+use std::sync::Once;
 
 // ----- xz-embedded MicroLZMA decoder FFI -----------------------------
 
@@ -209,10 +215,13 @@ pub fn decompress(
         .try_into()
         .map_err(|_| "lzma: expected size > u32".to_string())?;
 
-    // SAFETY: xz_crc32_init is idempotent and reentrant-safe per the
-    // xz-embedded contract; calling it on every decompress avoids
-    // having to track init state at the Rust boundary.
-    unsafe { xz_crc32_init() };
+    // SAFETY: xz_crc32_init mutates a static `xz_crc32_table` without
+    // any internal synchronization, so concurrent calls from multiple
+    // threads are a data race (UB). std::sync::Once gives exactly-once
+    // initialization with the right happens-before edges for every
+    // subsequent decoder run on any thread.
+    static CRC32_INIT: Once = Once::new();
+    CRC32_INIT.call_once(|| unsafe { xz_crc32_init() });
 
     // SAFETY: passing a valid mode enum and a u32 dict size. NULL
     // return means allocation failure; we check below.
