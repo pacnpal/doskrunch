@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::archive::{
-    build_aplib_entry, build_lzma_entry, build_stored_entry, flags, Algorithm, Archive, TargetTier,
-    APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT,
+    build_aplib_entry, build_lzma_entry, build_lzsa2_entry, build_stored_entry, flags, Algorithm,
+    Archive, TargetTier, APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT, LZSA2_CHUNK_INPUT,
 };
 use crate::fat_time::unix_to_fat;
 use crate::name83::{dedupe, mangle};
@@ -33,7 +33,7 @@ pub struct PackOptions {
 
 pub fn pack(opts: PackOptions) -> Result<()> {
     match opts.algorithm {
-        Algorithm::Stored | Algorithm::Aplib => {}
+        Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzsa2 => {}
         Algorithm::Lzma => {
             // PLAN.md §4: LZMA is 386+ only. The decoder uses 32-bit
             // integer arithmetic that the 8086 / 286 tiers can't run.
@@ -48,7 +48,6 @@ pub fn pack(opts: PackOptions) -> Result<()> {
                 _ => {}
             }
         }
-        Algorithm::Lzsa2 => bail!("algorithm 'lzsa2' lands in phase 6"),
     }
 
     // The CLI layer enforces the same ceiling; assert here so library
@@ -57,9 +56,9 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     let chunk_max = match opts.algorithm {
         Algorithm::Aplib => APLIB_CHUNK_INPUT,
         Algorithm::Lzma => LZMA_CHUNK_INPUT,
+        Algorithm::Lzsa2 => LZSA2_CHUNK_INPUT,
         // Stored chunks are bounded by the per-chunk u16 size field.
         Algorithm::Stored => u16::MAX as usize,
-        _ => unreachable!(),
     };
     if !(1..=chunk_max).contains(&opts.chunk_size) {
         bail!(
@@ -247,8 +246,9 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             Algorithm::Lzma => {
                 build_lzma_entry(&stored_name, 0x20, timestamp, &data, opts.chunk_size)
             }
-            // Lzsa2 rejected earlier; unreachable here.
-            other => bail!("internal: unexpected algorithm {}", other.name()),
+            Algorithm::Lzsa2 => {
+                build_lzsa2_entry(&stored_name, 0x20, timestamp, &data, opts.chunk_size)
+            }
         }
         .map_err(|e| anyhow::anyhow!("{}: {}", src.display(), e))?;
         archive.files.push(entry);

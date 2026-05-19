@@ -553,6 +553,21 @@ pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
 /// LZMA stub's `g_lzma_buf` output scratch is sized to match.
 pub const LZMA_CHUNK_INPUT: usize = 16 * 1024;
 
+/// Maximum uncompressed bytes per LZSA2 chunk. Matches
+/// `APLIB_CHUNK_INPUT` for the same algorithm-independence reason, and
+/// stays under lzsa's per-block ceiling (raw-block mode encodes one
+/// block per call, so chunks above ~64 KiB would fail).
+pub const LZSA2_CHUNK_INPUT: usize = 16 * 1024;
+
+/// Producer-side ceiling on a single LZSA2 chunk's compressed size.
+/// `lzsa_get_max_compressed_size_inmem(16 KiB)` reports ~16.5 KiB for
+/// raw blocks (the LZSA2 worst case is roughly n + n/256 + a few
+/// bytes of header). 17 KiB gives the stub's scratch a fixed compile-
+/// time size and matches the aPLib / LZMA conventions; chunks landing
+/// above this fail the host-side bound check before they reach the
+/// archive, so the stub's runtime `g_lzsa2_src` overrun is unreachable.
+pub const LZSA2_MAX_COMPRESSED_CHUNK: usize = 17 * 1024;
+
 /// Producer-side ceiling on a single LZMA chunk's compressed size. LZMA's
 /// worst-case expansion on incompressible data is roughly `n + n/200 +
 /// 16`, so a 16 KiB chunk caps at ~16.5 KiB. Plus the 1-byte MicroLZMA
@@ -706,6 +721,67 @@ pub fn build_stored_entry(
     })
 }
 
+/// Build an LZSA2-compressed file entry. Each chunk's uncompressed
+/// payload is at most `chunk_size` bytes (bounded by `LZSA2_CHUNK_INPUT`
+/// at the caller). The compressed stream is a raw LZSA2 block
+/// (`LZSA_FLAG_RAW_BLOCK` on the lzsa encoder), which matches what the
+/// stub-side ASM depackers consume on the wire.
+pub fn build_lzsa2_entry(
+    name_8_3: &str,
+    attrs: u8,
+    timestamp: u32,
+    data: &[u8],
+    chunk_size: usize,
+) -> Result<FileEntry, ArchiveError> {
+    if !(1..=LZSA2_CHUNK_INPUT).contains(&chunk_size) {
+        return Err(ArchiveError::InvalidChunkSize {
+            algorithm: "lzsa2",
+            given: chunk_size,
+            max: LZSA2_CHUNK_INPUT,
+        });
+    }
+    let projected = data.len().div_ceil(chunk_size.max(1));
+    if projected > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(projected));
+    }
+    let crc = crc32fast::hash(data);
+    let mut name = name_8_3.as_bytes().to_vec();
+    name.push(0);
+    let chunks: Vec<Chunk> = if data.is_empty() {
+        vec![Chunk {
+            uncompressed_size: 0,
+            data: Vec::new(),
+        }]
+    } else {
+        let mut out = Vec::with_capacity(data.len().div_ceil(chunk_size));
+        for c in data.chunks(chunk_size) {
+            let compressed = crate::compress::lzsa2::compress(c)
+                .map_err(ArchiveError::Lzsa2Compress)?;
+            if compressed.len() > LZSA2_MAX_COMPRESSED_CHUNK {
+                return Err(ArchiveError::Lzsa2ChunkOverflow {
+                    uncompressed: c.len(),
+                    compressed: compressed.len(),
+                });
+            }
+            out.push(Chunk {
+                uncompressed_size: c.len() as u16,
+                data: compressed,
+            });
+        }
+        out
+    };
+    if chunks.len() > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(chunks.len()));
+    }
+    Ok(FileEntry {
+        name,
+        attrs,
+        timestamp,
+        chunks,
+        crc32: crc,
+    })
+}
+
 /// Build an LZMA-compressed file entry. Each chunk's uncompressed
 /// payload is at most `chunk_size` bytes (bounded by `LZMA_CHUNK_INPUT`
 /// at the caller). The compressed stream is xz-embedded's MicroLZMA
@@ -805,6 +881,11 @@ pub enum ArchiveError {
         compressed: usize,
     },
     LzmaCompress(String),
+    Lzsa2ChunkOverflow {
+        uncompressed: usize,
+        compressed: usize,
+    },
+    Lzsa2Compress(String),
     InvalidChunkSize {
         algorithm: &'static str,
         given: usize,
@@ -859,6 +940,15 @@ impl std::fmt::Display for ArchiveError {
                 LZMA_MAX_COMPRESSED_CHUNK,
             ),
             Self::LzmaCompress(msg) => write!(f, "{msg}"),
+            Self::Lzsa2ChunkOverflow {
+                uncompressed,
+                compressed,
+            } => write!(
+                f,
+                "lzsa2 chunk: {uncompressed} bytes compressed to {compressed} bytes, exceeding the {} byte stub g_lzsa2_src ceiling",
+                LZSA2_MAX_COMPRESSED_CHUNK,
+            ),
+            Self::Lzsa2Compress(msg) => write!(f, "{msg}"),
             Self::InvalidChunkSize {
                 algorithm,
                 given,
@@ -985,6 +1075,61 @@ mod tests {
             .sum();
         assert_eq!(total as usize, data.len());
         aplib_roundtrip(vec![entry]);
+    }
+
+    fn lzsa2_roundtrip(files: Vec<FileEntry>) {
+        let mut a = Archive::new(Algorithm::Lzsa2, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = files;
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let parsed = Archive::read(&mut r).unwrap();
+        assert_eq!(a, parsed);
+    }
+
+    #[test]
+    fn lzsa2_single_file_roundtrips() {
+        let data = b"hello lzsa2 world, hello lzsa2 world, hello lzsa2 world.".repeat(8);
+        let entry = build_lzsa2_entry("HELLO.TXT", 0x20, 0, &data, LZSA2_CHUNK_INPUT).unwrap();
+        let csz: usize = entry.chunks.iter().map(|c| c.data.len()).sum();
+        assert!(
+            csz < data.len(),
+            "expected compression: csz={csz} usz={}",
+            data.len()
+        );
+        assert_eq!(entry.uncompressed_size() as usize, data.len());
+        lzsa2_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzsa2_empty_file_roundtrips() {
+        let entry = build_lzsa2_entry("EMPTY.BIN", 0x20, 0, b"", LZSA2_CHUNK_INPUT).unwrap();
+        assert_eq!(entry.uncompressed_size(), 0);
+        lzsa2_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzsa2_multi_chunk_file_roundtrips() {
+        let data: Vec<u8> = (0..(LZSA2_CHUNK_INPUT + 1024))
+            .map(|i| (i & 0xff) as u8)
+            .collect();
+        let entry = build_lzsa2_entry("BIG.BIN", 0x20, 0, &data, LZSA2_CHUNK_INPUT).unwrap();
+        assert!(entry.chunks.len() >= 2, "should split into multiple chunks");
+        let total: u32 = entry
+            .chunks
+            .iter()
+            .map(|c| c.uncompressed_size as u32)
+            .sum();
+        assert_eq!(total as usize, data.len());
+        lzsa2_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzsa2_rejects_chunk_size_above_ceiling() {
+        let data = vec![0u8; 32];
+        let err = build_lzsa2_entry("X.BIN", 0x20, 0, &data, LZSA2_CHUNK_INPUT + 1).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidChunkSize { .. }), "got {err:?}");
     }
 
     fn lzma_roundtrip(files: Vec<FileEntry>) {

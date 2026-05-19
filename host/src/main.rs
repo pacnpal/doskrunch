@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use doskrunch::archive::{APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT};
+use doskrunch::archive::{APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT, LZSA2_CHUNK_INPUT};
 use doskrunch::{archive, inspect, pack, unpack};
 
 #[derive(Parser)]
@@ -33,9 +33,10 @@ enum Cmd {
         /// recursively for regular files.
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
-        /// Compression algorithm. Defaults to `aplib`; `stored`
-        /// remains available as a fallback. LZSA2 and LZMA land in
-        /// later phases.
+        /// Compression algorithm. Defaults to `aplib`. `stored` is the
+        /// no-op fallback. `lzma` is shipped on `--target 386+` for
+        /// the best ratio. `lzsa2` is shipped on every tier for the
+        /// fastest decompression on retro hardware.
         #[arg(long, value_enum, default_value_t = AlgoArg::Aplib)]
         algo: AlgoArg,
         /// CPU target tier for the embedded stub.
@@ -131,19 +132,16 @@ fn main() -> Result<()> {
             preserve_timestamps,
             chunk_size,
         } => {
-            // Validate `--chunk-size` only for shipped algorithms.
-            // `aplib`, `stored`, and `lzma` are all shipped now
-            // (Phase 5 wired LZMA), so each has its own ceiling. The
-            // remaining deferred algorithm is `lzsa2`; for that we
-            // return None so the chunk-size check is skipped and the
-            // deferred-algorithm bail inside pack() runs first,
-            // producing a more useful error than a chunk-size
-            // complaint against a placeholder ceiling would.
+            // All four algorithms ship as of Phase 6, so every arm
+            // returns a Some(<ceiling>) and the chunk-size check
+            // always runs at the CLI layer. If a future algorithm
+            // lands as deferred, that arm should return None so the
+            // pack()-level deferred-algorithm bail surfaces first.
             let max_chunk: Option<usize> = match algo {
                 AlgoArg::Aplib => Some(APLIB_CHUNK_INPUT),
                 AlgoArg::Stored => Some(u16::MAX as usize),
                 AlgoArg::Lzma => Some(LZMA_CHUNK_INPUT),
-                AlgoArg::Lzsa2 => None,
+                AlgoArg::Lzsa2 => Some(LZSA2_CHUNK_INPUT),
             };
             if let Some(max) = max_chunk {
                 if !(1..=max).contains(&chunk_size) {
@@ -181,7 +179,7 @@ fn main() -> Result<()> {
             println!("aplib        shipped (default; via vendored apultra)");
             println!("stored       shipped (fallback / no-op baseline)");
             println!("lzma         shipped (best ratio; --target 386+ only)");
-            println!("lzsa2        planned (phase 6; fast decompression)");
+            println!("lzsa2        shipped (fast decompression; via vendored lzsa)");
             Ok(())
         }
     }

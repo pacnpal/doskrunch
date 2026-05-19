@@ -148,8 +148,7 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
 
 fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
     match algo {
-        Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzma => {}
-        Algorithm::Lzsa2 => bail!("lzsa2 host-decode lands in phase 6"),
+        Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzma | Algorithm::Lzsa2 => {}
     }
     // Host-side cap on per-file uncompressed size. The unpack path
     // builds the whole file in memory before writing it out (the
@@ -218,7 +217,24 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
                 data.extend_from_slice(&decoded);
             }
-            _ => unreachable!("rejected above"),
+            Algorithm::Lzsa2 => {
+                if c.uncompressed_size == 0 {
+                    if !c.data.is_empty() {
+                        bail!(
+                            "{}: lzsa2 chunk declares 0 uncompressed bytes but carries {} compressed",
+                            entry.display_name(),
+                            c.data.len()
+                        );
+                    }
+                    continue;
+                }
+                let decoded = crate::compress::lzsa2::decompress(
+                    &c.data,
+                    c.uncompressed_size as usize,
+                )
+                .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
+                data.extend_from_slice(&decoded);
+            }
         }
     }
     let crc = crc32fast::hash(&data);
