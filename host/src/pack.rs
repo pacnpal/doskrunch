@@ -549,28 +549,28 @@ mod tests {
 
     #[test]
     fn accepts_lzma_on_386_and_above() {
-        // The stub blob dispatch will reject these until the LZMA
-        // stubs land — when that happens, this test should keep passing
-        // (stub_for returns Ok for the LZMA tier blob) and the pack
-        // itself succeeds end-to-end. Today it fails at stub_for which
-        // is still acceptable as long as the failure isn't the
-        // "requires 386 or higher" path.
-        let td = tempfile::tempdir().unwrap();
-        let input = make_input(td.path(), "a.txt", b"x");
-        let mut opts = default_opts(td.path(), vec![input], Algorithm::Lzma);
-        opts.target = TargetTier::I386;
-        let result = pack(opts);
-        match result {
-            Ok(()) => {
-                // Stub is wired; archive built successfully.
-            }
-            Err(e) => {
-                let s = e.to_string();
-                assert!(
-                    !s.contains("requires 386 or higher"),
-                    "should not reject lzma on a 386+ target; got {s}"
-                );
-            }
+        // Phase 5 shipped LZMA stub blobs for 386..p3, so `pack()`
+        // must now succeed end-to-end on every 386+ target — there is
+        // no longer a stub_for placeholder gap. Asserting success here
+        // (rather than tolerating an error that "isn't the 386-gate")
+        // catches a regression where the LZMA blob list in
+        // host/src/stub.rs or stubs/Makefile drifts and we silently
+        // stop wiring a tier.
+        for target in [
+            TargetTier::I386,
+            TargetTier::I486,
+            TargetTier::Pentium,
+            TargetTier::PentiumMmx,
+            TargetTier::P2,
+            TargetTier::P3,
+        ] {
+            let td = tempfile::tempdir().unwrap();
+            let input = make_input(td.path(), "a.txt", b"x");
+            let mut opts = default_opts(td.path(), vec![input], Algorithm::Lzma);
+            opts.target = target;
+            pack(opts).unwrap_or_else(|e| {
+                panic!("lzma pack on {target:?} should succeed but got: {e}")
+            });
         }
     }
 

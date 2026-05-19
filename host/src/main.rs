@@ -131,13 +131,14 @@ fn main() -> Result<()> {
             preserve_timestamps,
             chunk_size,
         } => {
-            // Validate `--chunk-size` only for shipped algorithms so
-            // `--algo lzma --chunk-size 99999` surfaces the more
-            // useful "lzma lands in phase 5" error from pack() rather
-            // than a chunk-size error against a placeholder ceiling.
-            // The shipped-algo check inside pack() runs first and
-            // returns the deferred-algorithm bail; chunk-size errors
-            // are only reachable for `stored` and `aplib`.
+            // Validate `--chunk-size` only for shipped algorithms.
+            // `aplib`, `stored`, and `lzma` are all shipped now
+            // (Phase 5 wired LZMA), so each has its own ceiling. The
+            // remaining deferred algorithm is `lzsa2`; for that we
+            // return None so the chunk-size check is skipped and the
+            // deferred-algorithm bail inside pack() runs first,
+            // producing a more useful error than a chunk-size
+            // complaint against a placeholder ceiling would.
             let max_chunk: Option<usize> = match algo {
                 AlgoArg::Aplib => Some(APLIB_CHUNK_INPUT),
                 AlgoArg::Stored => Some(u16::MAX as usize),

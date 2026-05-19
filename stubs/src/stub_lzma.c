@@ -207,7 +207,15 @@ int main(int argc, char **argv)
     if (lseek(self, (long)archive_off, SEEK_SET) == -1L) die("seek archive");
     if (read_exact(self, hdr, 21) != 0) die("read header");
     if (memcmp(hdr, DKCH, 4) != 0) die("bad archive magic");
+    /* hcrc is read but intentionally not verified. Matches stubs/src/
+     * stub.c (the aplib/stored stub) so the two stubs have identical
+     * archive-walk contracts; verifying CRCs across all stub variants
+     * is tracked as a follow-up "unify integrity checking" change
+     * rather than landing asymmetrically in the LZMA stub. Reading
+     * the bytes keeps the stream position correct for the per-file
+     * loop below. */
     if (read_exact(self, hcrc, 4) != 0) die("read header crc");
+    (void)hcrc; /* silence any future -Wunused-variable */
 
     if (hdr[4] != 1)  die("bad version");
     algo = hdr[5];
