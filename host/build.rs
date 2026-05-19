@@ -49,4 +49,47 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AR");
 
     build.compile("apultra");
+
+    // -- xz-embedded MicroLZMA decoder (host-side) -----------------------
+    //
+    // Vendored under vendor/xz-embedded; Linux-kernel source layout. We
+    // compile the minimal decoder-only file set:
+    //   * xz_crc32.c       — CRC32 table init (xz-embedded internal)
+    //   * xz_dec_lzma2.c   — LZMA2 + MicroLZMA decoder core
+    //
+    // xz_dec_stream.c (.xz container parser) and xz_dec_bcj.c (BCJ
+    // filters) are NOT compiled: the MicroLZMA APIs
+    // (xz_dec_microlzma_*) live entirely in xz_dec_lzma2.c, and
+    // doskrunch's archive framing carries the LZMA stream as raw
+    // MicroLZMA blocks with per-chunk uncomp/comp sizes already in
+    // the DKCH header. The .xz container would add ~32-48 bytes per
+    // chunk for redundant framing.
+    let xz_root = workspace.join("vendor/xz-embedded");
+    let xz_inc = xz_root.join("linux/include/linux");
+    let xz_lib = xz_root.join("linux/lib/xz");
+    let xz_cfg = xz_root.join("userspace");
+
+    let xz_sources = [
+        xz_lib.join("xz_crc32.c"),
+        xz_lib.join("xz_dec_lzma2.c"),
+    ];
+
+    let mut xz_build = cc::Build::new();
+    xz_build
+        .files(&xz_sources)
+        .include(&xz_inc)
+        .include(&xz_lib)
+        .include(&xz_cfg)
+        // Wire in the MicroLZMA decoder. xz_dec_lzma2.c gates the
+        // xz_dec_microlzma_* API behind XZ_DEC_MICROLZMA so the kernel
+        // build can omit it; we need it exposed for both the host's
+        // round-trip tests and the stub's chunk decode path.
+        .define("XZ_DEC_MICROLZMA", None)
+        // Quiet a noisy `fallthrough` macro redefinition warning under
+        // newer compilers; the macro definition in xz_config.h is the
+        // right one for the kernel-style C99 fallthrough attribute.
+        .warnings(false);
+    println!("cargo:rerun-if-changed={}", xz_lib.display());
+    println!("cargo:rerun-if-changed={}", xz_cfg.display());
+    xz_build.compile("xz_embedded");
 }

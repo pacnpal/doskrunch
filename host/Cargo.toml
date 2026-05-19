@@ -19,6 +19,13 @@ crc32fast = "1.4"
 # unix targets. Already in our transitive dep set; promoted to a
 # direct dep so the use is explicit.
 libc = "0.2"
+# Host-side LZMA encoder (Apache-2.0, pure Rust). The stub-side
+# decoder is C code vendored under `vendor/xz-embedded` and built
+# via `build.rs`. lzma-rust's `LZMAWriter::new_no_header` emits a
+# raw LZMA1 stream (no 13-byte properties header, no EOS marker),
+# which we then convert to xz-embedded's MicroLZMA format on a
+# per-chunk basis — see `host/src/compress/lzma.rs`.
+lzma-rust = "0.1"
 
 [build-dependencies]
 cc = "1.0"
