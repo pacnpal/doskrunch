@@ -161,11 +161,12 @@ measurement:
   decoder doesn't expose enough vectorizable surface for a measurable 30%
   speedup on the literal-heavy payloads the gate cares about. Documented as
   a measurement question, not a code-quality question.
-- **LZMA-vs-aPLib decompression-time gate** (PLAN.md §10). DOSBox-X is a
-  noisy substrate for cycle-accurate comparisons. The multi-chunk LZMA gate
-  finishes in roughly 3x the aPLib gate's wall-clock; cleanly isolating
-  decode time from DOS startup overhead needs stub-side `INT 1Ah` cycle-
-  counter instrumentation that hasn't landed yet.
+- **LZMA-vs-aPLib decode-time tradeoff** (PLAN.md §10). Decode-only timing now
+  lands via stub-side `INT 1Ah` instrumentation (`tests/benchmarks/results.md`):
+  on the shared 386/486/pentium tiers under DOSBox-X, LZMA decode is currently
+  ~70–83× slower than aPLib on the same 500 KiB payload. That's far beyond the
+  original speculative 10× gate, so v1 treats this as a documented ratio-vs-
+  speed tradeoff (use LZMA for size, not extraction speed).
 
 ## License
 

@@ -1,16 +1,12 @@
-//! Phase 3 §10 timing harness: measure end-to-end SFX wall-clock for a
-//! 500 KiB synthetic mixed-content payload at each shipped tier under
-//! headless DOSBox-X and regenerate `tests/benchmarks/results.md`.
+//! Phase 3/5 timing harness: measure decode-only time for aPLib vs LZMA
+//! on shared 386+ tiers under headless DOSBox-X and regenerate
+//! `tests/benchmarks/results.md`.
 //!
 //! NOT a correctness gate — this file is purely a measurement tool. The
-//! large-payload multi-chunk correctness gate lives in
-//! `host/tests/dosbox_aplib_large.rs` (runs in CI under `--ignored`,
-//! asserts byte-identical extraction at every tier). PLAN.md §10's
-//! 2–4× / 5–10× speedup ratios are tracked separately in
-//! `tests/benchmarks/results.md` and `tasks/todo.md` — see the perf-gate
-//! row in todo.md for the current "not met, awaiting user direction"
-//! state. The harness here reports raw wall-clock; it does not assert
-//! on the ratio so a measurement-substrate miss can't block the PR.
+//! large-payload multi-chunk correctness gates live in
+//! `host/tests/dosbox_aplib_large.rs` and `host/tests/dosbox_lzma_large.rs`.
+//! This harness reports decode-only BIOS timer ticks collected from the
+//! guest stubs.
 //!
 //! Double-gated: `#[ignore]` AND `DOSKRUNCH_RUN_BENCHMARK=1`. CI's
 //! `dosbox-x-integration` job runs `cargo test --workspace -- --ignored`
@@ -24,22 +20,10 @@
 //! and commit the regenerated `tests/benchmarks/results.md` when the
 //! numbers move.
 //!
-//! Caveats on the numbers (written into results.md too):
-//!   * DOSBox-X CPU emulation cost varies with the host CPU and the
-//!     guest cputype. Pentium is more expensive to emulate per
-//!     instruction than 386, which partially offsets the 32-bit-
-//!     register depacker's instruction-count win.
-//!   * `cycles=auto` lets DOSBox-X dynamically tune throughput. The
-//!     numbers below reflect total SFX wall-clock under that config,
-//!     including DOS startup overhead (a few hundred ms regardless of
-//!     payload).
-//!   * The depacker is a small fraction of the SFX run. Most wall-clock
-//!     time is DOS file I/O through INT 21h.
-
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod common;
 use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
@@ -49,9 +33,7 @@ use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 /// modern host. Anything longer is a hang.
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// How many times to run each tier. Wall-clock is noisy at sub-second
-/// granularity; the harness records min across N runs to filter out
-/// scheduling jitter from the host.
+/// How many times to run each (algorithm, tier) pair.
 const RUNS_PER_TIER: usize = 3;
 
 /// Payload size — matches PLAN.md §10 Phase 3.
@@ -110,9 +92,12 @@ fn synthesize_payload() -> Vec<u8> {
 struct TierResult {
     tier: &'static str,
     cputype: &'static str,
-    sfx_size: u64,
-    wall_clock_min_ms: u128,
-    runs: Vec<u128>,
+    aplib_sfx_size: u64,
+    lzma_sfx_size: u64,
+    aplib_ticks_min: u32,
+    lzma_ticks_min: u32,
+    aplib_runs_ticks: Vec<u32>,
+    lzma_runs_ticks: Vec<u32>,
 }
 
 #[test]
@@ -141,206 +126,237 @@ fn benchmark_tier_decompression() {
     fs::write(&payload_path, &payload).expect("write payload");
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
-    let tiers: &[(&str, &str)] = &[("8086", "8086"), ("386", "386"), ("pentium", "pentium")];
+    let tiers: &[(&str, &str)] = &[("386", "386"), ("486", "486"), ("pentium", "pentium")];
 
     let mut results: Vec<TierResult> = Vec::new();
     for (tier, cputype) in tiers {
-        let sfx_path = work_path.join(format!("OUT_{tier}.EXE"));
-        let status = Command::new(bin)
+        let aplib_sfx_path = work_path.join(format!("OUT_APLIB_{tier}.EXE"));
+        let lzma_sfx_path = work_path.join(format!("OUT_LZMA_{tier}.EXE"));
+
+        let aplib_pack = Command::new(bin)
             .arg("pack")
-            .arg(&sfx_path)
+            .arg(&aplib_sfx_path)
             .arg(&payload_path)
             .args(["--algo", "aplib", "--target", tier])
             .status()
-            .expect("spawn doskrunch pack");
-        assert!(status.success(), "pack failed for tier {tier}");
+            .expect("spawn doskrunch pack aplib");
+        assert!(aplib_pack.success(), "aplib pack failed for tier {tier}");
 
-        let sfx_size = fs::metadata(&sfx_path).expect("stat sfx").len();
+        let lzma_pack = Command::new(bin)
+            .arg("pack")
+            .arg(&lzma_sfx_path)
+            .arg(&payload_path)
+            .args(["--algo", "lzma", "--target", tier])
+            .status()
+            .expect("spawn doskrunch pack lzma");
+        assert!(lzma_pack.success(), "lzma pack failed for tier {tier}");
 
-        // dosbox-x needs the SFX named on an 8.3 path inside the mount.
-        // We rename per-run so each tier's run-dir is independent.
-        let mut runs_ms: Vec<u128> = Vec::with_capacity(RUNS_PER_TIER);
-        for run in 0..RUNS_PER_TIER {
-            let rundir = tempfile::tempdir().expect("rundir");
-            let rundir_path = rundir.path();
-            let runsfx = rundir_path.join("OUT.EXE");
-            fs::copy(&sfx_path, &runsfx).expect("copy sfx into rundir");
+        let aplib_sfx_size = fs::metadata(&aplib_sfx_path).expect("stat aplib sfx").len();
+        let lzma_sfx_size = fs::metadata(&lzma_sfx_path).expect("stat lzma sfx").len();
 
-            let conf_path = rundir_path.join("dosbox.conf");
-            fs::write(
-                &conf_path,
-                format!(
-                    concat!(
-                        "[cpu]\n",
-                        "cputype={cputype}\n",
-                        "core=normal\n",
-                        "cycles=auto\n",
-                        "[dosbox]\n",
-                        "memsize=4\n",
-                        "[sdl]\n",
-                        "output=surface\n",
-                        "[autoexec]\n",
-                        "mount c \"{mount}\"\n",
-                        "c:\n",
-                        "OUT.EXE\n",
-                        "exit\n",
-                    ),
-                    cputype = cputype,
-                    mount = rundir_path.display(),
-                ),
-            )
-            .expect("write dosbox.conf");
+        let aplib_runs_ticks = run_algo_timing(&aplib_sfx_path, &payload, tier, cputype, "aplib");
+        let lzma_runs_ticks = run_algo_timing(&lzma_sfx_path, &payload, tier, cputype, "lzma");
 
-            let started = Instant::now();
-            let mut dosbox = Command::new("dosbox-x")
-                .arg("-conf")
-                .arg(&conf_path)
-                .arg("-exit")
-                .arg("-nogui")
-                .env("SDL_VIDEODRIVER", "dummy")
-                .spawn()
-                .expect("spawn dosbox-x");
-            let dosbox_status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
-                Ok(s) => s,
-                Err(WaitError::Timeout) => panic!(
-                    "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (tier {tier} run {run}); child was killed"
-                ),
-                Err(WaitError::Wait(e)) => panic!(
-                    "waiting on dosbox-x failed: {e} (tier {tier} run {run}); child was killed"
-                ),
-            };
-            assert!(
-                dosbox_status.success(),
-                "dosbox-x exited non-zero for tier {tier} run {run}: {dosbox_status:?}"
-            );
-            let elapsed = started.elapsed().as_millis();
-            runs_ms.push(elapsed);
-
-            // Sanity check: the extracted payload must match the input
-            // exactly. We verify on every run so a flaky depacker can't
-            // hide behind aggregate timing.
-            let extracted = locate_case_insensitive(rundir_path, "BENCH_PAYLOAD.BIN")
-                .or_else(|| locate_case_insensitive(rundir_path, "BENCH_PA.BIN"))
-                .expect("locate extracted payload");
-            let body = fs::read(&extracted).expect("read extracted");
-            assert_eq!(body.len(), payload.len(), "size mismatch tier {tier}");
-            assert!(body == payload, "byte mismatch tier {tier}");
-        }
-        let wall_clock_min_ms = *runs_ms.iter().min().unwrap();
         results.push(TierResult {
             tier,
             cputype,
-            sfx_size,
-            wall_clock_min_ms,
-            runs: runs_ms,
+            aplib_sfx_size,
+            lzma_sfx_size,
+            aplib_ticks_min: *aplib_runs_ticks.iter().min().unwrap(),
+            lzma_ticks_min: *lzma_runs_ticks.iter().min().unwrap(),
+            aplib_runs_ticks,
+            lzma_runs_ticks,
         });
     }
 
     write_results_markdown(&root, &results, &payload);
 
-    // Print the ratios for inspection. This is a measurement harness,
-    // not a gate — the byte-identical correctness check lives in
-    // dosbox_aplib_large.rs (and runs in CI under --ignored without
-    // requiring the env var). The PLAN.md §10 2–4× / 5–10× speedup
-    // expectation is tracked in tasks/todo.md as an unmet perf gate;
-    // this harness doesn't assert it because end-to-end SFX wall-clock
-    // under DOSBox-X cycles=auto isn't a reliable signal for relative
-    // depacker performance (per-cputype emulation cost variance + DOS
-    // startup + INT 21h I/O are all in the path). An assertion here
-    // would either spuriously fail on measurement noise or pass on a
-    // genuinely slow port, neither of which is useful. Closing the
-    // perf gate needs isolated depacker timing (stub-side INT 1Ah
-    // cycle counter) or real-iron data; see tasks/todo.md.
-    let baseline = results[0].wall_clock_min_ms.max(1);
     for r in &results {
-        let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
+        let ratio = r.lzma_ticks_min as f64 / r.aplib_ticks_min.max(1) as f64;
         println!(
-            "tier={tier:8} wall={ms:6} ms  ratio_vs_8086={ratio:.2}x",
+            "tier={tier:8} aplib_ticks={aplib:6} lzma_ticks={lzma:6} lzma/aplib={ratio:.2}x",
             tier = r.tier,
-            ms = r.wall_clock_min_ms,
+            aplib = r.aplib_ticks_min,
+            lzma = r.lzma_ticks_min,
             ratio = ratio,
         );
     }
+}
+
+fn parse_decode_ticks(path: &Path) -> u32 {
+    let text = fs::read_to_string(path).expect("read DKTIME.TXT");
+    let value = text
+        .trim()
+        .strip_prefix("DECODE_TICKS=")
+        .expect("timing file format");
+    u32::from_str_radix(value, 16).expect("decode ticks hex")
+}
+
+fn run_algo_timing(
+    sfx_path: &Path,
+    payload: &[u8],
+    tier: &str,
+    cputype: &str,
+    algo: &str,
+) -> Vec<u32> {
+    let mut runs_ticks: Vec<u32> = Vec::with_capacity(RUNS_PER_TIER);
+    for run in 0..RUNS_PER_TIER {
+        let rundir = tempfile::tempdir().expect("rundir");
+        let rundir_path = rundir.path();
+        let runsfx = rundir_path.join("OUT.EXE");
+        fs::copy(sfx_path, &runsfx).expect("copy sfx into rundir");
+
+        let conf_path = rundir_path.join("dosbox.conf");
+        fs::write(
+            &conf_path,
+            format!(
+                concat!(
+                    "[cpu]\n",
+                    "cputype={cputype}\n",
+                    "core=normal\n",
+                    "cycles=auto\n",
+                    "[dosbox]\n",
+                    "memsize=4\n",
+                    "[sdl]\n",
+                    "output=surface\n",
+                    "[autoexec]\n",
+                    "mount c \"{mount}\"\n",
+                    "c:\n",
+                    "set DOSKRUNCH_BENCH_TIMING=1\n",
+                    "OUT.EXE\n",
+                    "exit\n",
+                ),
+                cputype = cputype,
+                mount = rundir_path.display(),
+            ),
+        )
+        .expect("write dosbox.conf");
+
+        let mut dosbox = Command::new("dosbox-x")
+            .arg("-conf")
+            .arg(&conf_path)
+            .arg("-exit")
+            .arg("-nogui")
+            .env("SDL_VIDEODRIVER", "dummy")
+            .spawn()
+            .expect("spawn dosbox-x");
+        let dosbox_status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
+            Ok(s) => s,
+            Err(WaitError::Timeout) => panic!(
+                "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (algo {algo} tier {tier} run {run}); child was killed"
+            ),
+            Err(WaitError::Wait(e)) => panic!(
+                "waiting on dosbox-x failed: {e} (algo {algo} tier {tier} run {run}); child was killed"
+            ),
+        };
+        assert!(
+            dosbox_status.success(),
+            "dosbox-x exited non-zero for algo {algo} tier {tier} run {run}: {dosbox_status:?}"
+        );
+
+        let extracted = locate_case_insensitive(rundir_path, "BENCH_PAYLOAD.BIN")
+            .or_else(|| locate_case_insensitive(rundir_path, "BENCH_PA.BIN"))
+            .expect("locate extracted payload");
+        let body = fs::read(&extracted).expect("read extracted");
+        assert_eq!(
+            body.len(),
+            payload.len(),
+            "size mismatch algo {algo} tier {tier}"
+        );
+        assert!(
+            body == payload,
+            "byte mismatch algo {algo} tier {tier} run {run}"
+        );
+
+        let timing_path =
+            locate_case_insensitive(rundir_path, "DKTIME.TXT").expect("locate DKTIME.TXT");
+        runs_ticks.push(parse_decode_ticks(&timing_path));
+    }
+    runs_ticks
+}
+
+fn ticks_to_ms(ticks: u32) -> f64 {
+    (ticks as f64) * (1000.0 / 18.20648)
 }
 
 fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     let dest = root.join("tests").join("benchmarks").join("results.md");
     fs::create_dir_all(dest.parent().unwrap()).expect("mkdir benchmarks");
 
-    let baseline = results
-        .iter()
-        .find(|r| r.tier == "8086")
-        .map(|r| r.wall_clock_min_ms.max(1))
-        .unwrap_or(1);
-
     let mut md = String::new();
-    md.push_str("# Tier decompression benchmark\n\n");
+    md.push_str("# Decode-only benchmark (aPLib vs LZMA)\n\n");
     md.push_str(&format!(
         "Synthetic mixed-content payload: {} KiB ({} bytes) — text + zeros + LCG-random + repeated patterns. \
         See `host/tests/benchmark_tiers.rs::synthesize_payload` for the exact distribution.\n\n",
         payload.len() / 1024,
         payload.len(),
     ));
+    md.push_str("Measurement: decode-only BIOS timer ticks (`INT 1Ah, AH=00h`) gathered inside the guest stubs around the depacker call (`aplib_depack` for aPLib and `xz_dec_microlzma_run` for LZMA). Min across 3 runs per (algorithm, tier).\n\n");
+    md.push_str("The harness enables timing by setting `DOSKRUNCH_BENCH_TIMING=1` in DOS before running the SFX; stubs then write `DKTIME.TXT` (`DECODE_TICKS=<hex>`) into the extraction directory. Tick frequency is ~18.20648 Hz (~54.925 ms/tick).\n\n");
     md.push_str(
-        "Measurement: end-to-end SFX wall-clock under headless DOSBox-X with `cycles=auto`, \
-        min across 3 runs per tier. The benchmark is `#[ignore]`-gated AND env-var-gated \
-        (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this \
-        file. Run locally with:\n\n",
+        "The benchmark is `#[ignore]`-gated AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file. Run locally with:\n\n",
     );
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
-    md.push_str("| Tier | cputype | SFX size (bytes) | Wall clock min (ms) | Ratio vs 8086 |\n");
-    md.push_str("|------|---------|------------------|----------------------|----------------|\n");
+    md.push_str("| Tier | cputype | aPLib SFX size (bytes) | LZMA SFX size (bytes) | aPLib decode min (ticks) | LZMA decode min (ticks) | LZMA/aPLib ratio | Verdict |\n");
+    md.push_str("|------|---------|------------------------|-----------------------|--------------------------|-------------------------|------------------|---------|\n");
     for r in results {
-        let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
+        let ratio = r.lzma_ticks_min as f64 / r.aplib_ticks_min.max(1) as f64;
+        let verdict = if ratio <= 10.0 { "met" } else { "not met" };
         md.push_str(&format!(
-            "| {tier} | {cputype} | {sfx} | {ms} | {ratio:.2}× |\n",
+            "| {tier} | {cputype} | {aplib_sfx} | {lzma_sfx} | {aplib_ticks} (~{aplib_ms:.1} ms) | {lzma_ticks} (~{lzma_ms:.1} ms) | {ratio:.2}× | {verdict} |\n",
             tier = r.tier,
             cputype = r.cputype,
-            sfx = r.sfx_size,
-            ms = r.wall_clock_min_ms,
+            aplib_sfx = r.aplib_sfx_size,
+            lzma_sfx = r.lzma_sfx_size,
+            aplib_ticks = r.aplib_ticks_min,
+            aplib_ms = ticks_to_ms(r.aplib_ticks_min),
+            lzma_ticks = r.lzma_ticks_min,
+            lzma_ms = ticks_to_ms(r.lzma_ticks_min),
             ratio = ratio,
+            verdict = verdict,
         ));
     }
-    md.push_str("\n## Per-run detail\n\n");
-    md.push_str("| Tier | Run 1 (ms) | Run 2 (ms) | Run 3 (ms) |\n");
-    md.push_str("|------|------------|------------|------------|\n");
+    md.push_str("\n## Per-run decode ticks\n\n");
+    md.push_str("| Tier | aPLib run 1 | aPLib run 2 | aPLib run 3 | LZMA run 1 | LZMA run 2 | LZMA run 3 |\n");
+    md.push_str("|------|-------------|-------------|-------------|------------|------------|------------|\n");
     for r in results {
-        let cells: Vec<String> = (0..RUNS_PER_TIER)
-            .map(|i| r.runs.get(i).map(|v| v.to_string()).unwrap_or_default())
+        let a: Vec<String> = (0..RUNS_PER_TIER)
+            .map(|i| {
+                r.aplib_runs_ticks
+                    .get(i)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let l: Vec<String> = (0..RUNS_PER_TIER)
+            .map(|i| {
+                r.lzma_runs_ticks
+                    .get(i)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            })
             .collect();
         md.push_str(&format!(
-            "| {tier} | {} |\n",
-            cells.join(" | "),
+            "| {tier} | {} | {} |\n",
+            a.join(" | "),
+            l.join(" | "),
             tier = r.tier,
         ));
     }
-    md.push_str(
-        "\n## Caveats\n\n\
-         * `cycles=auto` is DOSBox-X's heuristic throughput scaler; results vary with host \
-           CPU and DOSBox-X version. Pentium emulation is more expensive per guest instruction \
-           than 386 emulation, which partially offsets the speed-optimized depacker's win.\n\
-         * Most wall-clock time is DOS startup overhead and INT 21h file I/O, not the depacker. \
-           The depacker is a small slice of the total run.\n\
-         * PLAN.md §10 Phase 3 Verify explicitly lists \"386 is 2-4x faster than 8086, pentium \
-           is 5-10x faster\" as the expected benchmark outcome — it does not qualify that as \
-           real-hardware-only. The numbers above miss that gate. What we can assert from this \
-           harness is correctness, not relative depacker performance: the DOSBox-X correctness \
-           gates (`dosbox_8086`, `dosbox_aplib_8086`, `dosbox_aplib_386`, \
-           `dosbox_aplib_pentium`, and the multi-chunk `dosbox_aplib_large`) all extract \
-           byte-identical payloads at every tier. Where the speedup went is currently a \
-           hypothesis, not a measurement: DOSBox-X with `cycles=auto` is a noisy substrate \
-           for relative-CPU comparison (per-cputype emulation cost varies with the host \
-           CPU and DOSBox-X build), and DOS startup + INT 21h file I/O likely dominate the \
-           2-second wall-clock. Confirming or refuting the depacker-is-fine hypothesis needs \
-           either isolated depacker timing (a stub-side INT 1Ah cycle counter that times \
-           just the depacker call, not the whole SFX) or real-iron measurement (86Box or a \
-           real 386 / Pentium box). Phase 3 ships the ports and the correctness gates; the \
-           perf gate is acknowledged unmet here for the user to direct.\n\
-         * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI's \
-           `cargo test --workspace -- --ignored` run skips it via the env-var check, so this \
-           file is only regenerated by a local opt-in run. Commit a refreshed copy when the \
-           numbers move.\n",
-    );
+    md.push_str("\n## Gate verdict (PLAN.md §10 Phase 5)\n\n");
+    let worst = results
+        .iter()
+        .map(|r| r.lzma_ticks_min as f64 / r.aplib_ticks_min.max(1) as f64)
+        .fold(0.0_f64, f64::max);
+    if worst <= 10.0 {
+        md.push_str(&format!(
+            "Gate met: worst observed LZMA/aPLib decode-only ratio across 386/486/pentium is {worst:.2}× (<= 10×).\n"
+        ));
+    } else {
+        md.push_str(&format!(
+            "Gate not met: worst observed LZMA/aPLib decode-only ratio across 386/486/pentium is {worst:.2}× (> 10×).\n"
+        ));
+    }
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
 }

@@ -109,6 +109,43 @@ extern unsigned int aplib_depack(const u8 *src, u8 *dst);
 extern unsigned int lzsa2_depack(const u8 *src, u8 *dst);
 #pragma aux lzsa2_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
 
+#ifdef DK_BENCH_TIMING
+static u32 bios_ticks(void)
+{
+    union REGS inr;
+    union REGS outr;
+    inr.h.ah = 0x00;
+    int86(0x1A, &inr, &outr);
+    return ((u32)outr.x.cx << 16) | (u32)outr.x.dx;
+}
+
+static void u32_to_hex8(u32 v, char *dst)
+{
+    unsigned i;
+    for (i = 0; i < 8; i++) {
+        unsigned nib = (unsigned)((v >> ((7u - i) * 4u)) & 0x0Fu);
+        dst[i] = (char)(nib < 10u ? ('0' + nib) : ('A' + (nib - 10u)));
+    }
+}
+
+static int bench_timing_enabled(void)
+{
+    const char *v = getenv("DOSKRUNCH_BENCH_TIMING");
+    return (v != 0 && v[0] != '\0');
+}
+
+static void write_decode_ticks(u32 ticks)
+{
+    int h;
+    unsigned wrote = 0;
+    char line[] = "DECODE_TICKS=00000000\r\n";
+    u32_to_hex8(ticks, line + 13);
+    if (_dos_creat("DKTIME.TXT", 0x20, &h) != 0) return;
+    (void)_dos_write(h, line, (unsigned)(sizeof(line) - 1), &wrote);
+    _dos_close(h);
+}
+#endif
+
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
 
@@ -256,6 +293,10 @@ int main(int argc, char **argv)
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
     u8 hcrc[4];
+#ifdef DK_BENCH_TIMING
+    int bench_timing = 0;
+    u32 decode_ticks = 0;
+#endif
 
     (void)argc;
 
@@ -300,6 +341,9 @@ int main(int argc, char **argv)
      * mistake, which would have picked up the low half of
      * total_compressed when the v1.1 stub starts honoring this. */
     run_after_offset = rd_u16(hdr + 19);
+#ifdef DK_BENCH_TIMING
+    bench_timing = bench_timing_enabled();
+#endif
 
     for (i = 0; i < file_count; i++) {
         u8  name_len_b;
@@ -378,10 +422,17 @@ int main(int argc, char **argv)
                 if (copy_bytes(self, out, (u32)csize) != 0) die("copy");
             } else if (algo == 1) {
                 /* aplib: read whole compressed chunk, depack, write out. */
+                u32 t0 = 0;
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
+#ifdef DK_BENCH_TIMING
+                if (bench_timing) t0 = bios_ticks();
+#endif
                 produced = aplib_depack(g_src, g_buf);
+#ifdef DK_BENCH_TIMING
+                if (bench_timing) decode_ticks += (bios_ticks() - t0);
+#endif
                 if (produced != usize) die("aplib size");
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
@@ -416,6 +467,12 @@ int main(int argc, char **argv)
         puts2(namebuf);
         puts2("\r\n");
     }
+
+#ifdef DK_BENCH_TIMING
+    if (bench_timing && algo == 1) {
+        write_decode_ticks(decode_ticks);
+    }
+#endif
 
     /* Run-after-extract (Phase 6 host-side; stub-side deferred to
      * v1.1). The host writes the RUN_AFTER flag and a NUL-terminated

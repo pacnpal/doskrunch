@@ -80,6 +80,43 @@ static char g_run_after[RUN_AFTER_BUF];
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
 
+#ifdef DK_BENCH_TIMING
+static u32 bios_ticks(void)
+{
+    union REGS inr;
+    union REGS outr;
+    inr.h.ah = 0x00;
+    int86(0x1A, &inr, &outr);
+    return ((u32)outr.x.cx << 16) | (u32)outr.x.dx;
+}
+
+static void u32_to_hex8(u32 v, char *dst)
+{
+    unsigned i;
+    for (i = 0; i < 8; i++) {
+        unsigned nib = (unsigned)((v >> ((7u - i) * 4u)) & 0x0Fu);
+        dst[i] = (char)(nib < 10u ? ('0' + nib) : ('A' + (nib - 10u)));
+    }
+}
+
+static int bench_timing_enabled(void)
+{
+    const char *v = getenv("DOSKRUNCH_BENCH_TIMING");
+    return (v != 0 && v[0] != '\0');
+}
+
+static void write_decode_ticks(u32 ticks)
+{
+    int h;
+    unsigned wrote = 0;
+    char line[] = "DECODE_TICKS=00000000\r\n";
+    u32_to_hex8(ticks, line + 13);
+    if (_dos_creat("DKTIME.TXT", 0x20, &h) != 0) return;
+    (void)_dos_write(h, line, (unsigned)(sizeof(line) - 1), &wrote);
+    _dos_close(h);
+}
+#endif
+
 static void puts2(const char *s)
 {
     unsigned wrote;
@@ -198,6 +235,10 @@ int main(int argc, char **argv)
     u8 hdr[21];
     u8 hcrc[4];
     struct xz_dec_microlzma *dec;
+#ifdef DK_BENCH_TIMING
+    int bench_timing = 0;
+    u32 decode_ticks = 0;
+#endif
 
     (void)argc;
 
@@ -241,6 +282,9 @@ int main(int argc, char **argv)
      * total_uncompressed, 15-18 total_compressed, 19-20
      * run_after_offset. Mirrors the same fix applied to stub.c. */
     run_after_offset = rd_u16(hdr + 19);
+#ifdef DK_BENCH_TIMING
+    bench_timing = bench_timing_enabled();
+#endif
 
     xz_crc32_init();
     /* XZ_SINGLE: the output buffer IS the dictionary; no separate
@@ -305,6 +349,7 @@ int main(int argc, char **argv)
             unsigned wrote;
             struct xz_buf b;
             enum xz_ret ret;
+            u32 t0 = 0;
 
             if (read_exact(self, ch_b, 4) != 0) die("read chunk header");
             csize = rd_u16(ch_b);
@@ -328,7 +373,13 @@ int main(int argc, char **argv)
             b.out_pos = 0;
             b.out_size = usize;
 
+#ifdef DK_BENCH_TIMING
+            if (bench_timing) t0 = bios_ticks();
+#endif
             ret = xz_dec_microlzma_run(dec, &b);
+#ifdef DK_BENCH_TIMING
+            if (bench_timing) decode_ticks += (bios_ticks() - t0);
+#endif
             if (ret != XZ_STREAM_END) die("lzma decode");
             if (b.out_pos != usize) die("lzma size");
 
@@ -347,6 +398,12 @@ int main(int argc, char **argv)
         puts2(namebuf);
         puts2("\r\n");
     }
+
+#ifdef DK_BENCH_TIMING
+    if (bench_timing) {
+        write_decode_ticks(decode_ticks);
+    }
+#endif
 
     xz_dec_microlzma_end(dec);
 

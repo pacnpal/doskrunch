@@ -177,7 +177,7 @@ $(OUTDIR)/aplib_286.bin: $(SRC)/stub_286.obj $(SRC)/aplib_depack_16.obj $(SRC)/l
 # disk without one rule clobbering the other when both targets are
 # built (e.g. `make all`).
 $(SRC)/stub_386.obj: $(SRC)/stub.c
-	cd $(SRC) && $(WCC) $(WCC_FLAGS_386) -fo=stub_386.obj stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_386) -DDK_BENCH_TIMING -fo=stub_386.obj stub.c
 
 $(OUTDIR)/aplib_386.bin: $(SRC)/stub_386.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj
 	@mkdir -p $(OUTDIR)
@@ -194,7 +194,7 @@ $(OUTDIR)/aplib_386.bin: $(SRC)/stub_386.obj $(SRC)/aplib_depack_32.obj $(SRC)/l
 # ----- 486 tier --------------------------------------------------------
 
 $(SRC)/stub_486.obj: $(SRC)/stub.c
-	cd $(SRC) && $(WCC) $(WCC_FLAGS_486) -fo=stub_486.obj stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_486) -DDK_BENCH_TIMING -fo=stub_486.obj stub.c
 
 $(OUTDIR)/aplib_486.bin: $(SRC)/stub_486.obj $(SRC)/aplib_depack_32.obj $(SRC)/lzsa2_depack_32.obj
 	@mkdir -p $(OUTDIR)
@@ -211,7 +211,7 @@ $(OUTDIR)/aplib_486.bin: $(SRC)/stub_486.obj $(SRC)/aplib_depack_32.obj $(SRC)/l
 # ----- pentium tier ----------------------------------------------------
 
 $(SRC)/stub_p5.obj: $(SRC)/stub.c
-	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -fo=stub_p5.obj stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -DDK_BENCH_TIMING -fo=stub_p5.obj stub.c
 
 $(OUTDIR)/aplib_pentium.bin: $(SRC)/stub_p5.obj $(SRC)/aplib_depack_p5.obj $(SRC)/lzsa2_depack_32.obj
 	@mkdir -p $(OUTDIR)
@@ -343,7 +343,7 @@ LZMA_STUB_CFLAGS_COMMON := -bt=dos -mc -os -zq -i=$(XZ_INC) -i=$(XZ_CFG)
 # still cd into $(SRC) because they don't need any include path
 # resolution beyond Watcom's defaults.
 $(SRC)/stub_lzma_386.obj: $(SRC)/stub_lzma.c
-	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -3 -fo=$@ $<
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -3 -DDK_BENCH_TIMING -fo=$@ $<
 
 $(SRC)/xz_crc32_386.obj: $(XZ_SRC)/xz_crc32.c
 	$(WCC) $(XZ_CFLAGS_386) -fo=$@ $<
@@ -365,7 +365,7 @@ $(OUTDIR)/lzma_386.bin: $(SRC)/stub_lzma_386.obj $(SRC)/xz_crc32_386.obj $(SRC)/
 
 # 486 tier ---
 $(SRC)/stub_lzma_486.obj: $(SRC)/stub_lzma.c
-	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -4 -fo=$@ $<
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -4 -DDK_BENCH_TIMING -fo=$@ $<
 
 $(SRC)/xz_crc32_486.obj: $(XZ_SRC)/xz_crc32.c
 	$(WCC) $(XZ_CFLAGS_486) -fo=$@ $<
@@ -387,7 +387,7 @@ $(OUTDIR)/lzma_486.bin: $(SRC)/stub_lzma_486.obj $(SRC)/xz_crc32_486.obj $(SRC)/
 
 # pentium tier ---
 $(SRC)/stub_lzma_p5.obj: $(SRC)/stub_lzma.c
-	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -5 -fo=$@ $<
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -5 -DDK_BENCH_TIMING -fo=$@ $<
 
 $(SRC)/xz_crc32_p5.obj: $(XZ_SRC)/xz_crc32.c
 	$(WCC) $(XZ_CFLAGS_P5) -fo=$@ $<

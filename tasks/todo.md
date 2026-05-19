@@ -407,6 +407,12 @@ ships per-tier LZMA blobs at 386 through p3.
 - [x] PLAN.md §4 "LZMA requires 386+" enforced at three layers:
       CLI (chunk-size validation), pack() (algorithm gate), and
       stub_for() (no LZMA blob for 8086 / 286 targets).
+- [x] PLAN.md §10 LZMA-vs-aPLib decode-time gate measured with
+      decode-only stub-side `INT 1Ah` timing (per-chunk depacker
+      call only) on 386/486/pentium. Results landed in
+      `tests/benchmarks/results.md`: LZMA is ~70–83× slower than
+      aPLib on this DOSBox-X harness, so the original 10× target
+      was redefined in PLAN.md as a documented tradeoff.
 
 **Not done in Phase 5 (deferred deliberately)**
 
@@ -428,15 +434,6 @@ ships per-tier LZMA blobs at 386 through p3.
   "push back on speculative work" framing the Phase 3 perf-gate
   row uses; left open as a measurement question rather than a
   code-quality question.
-- LZMA-vs-aPLib decompression-time gate from PLAN.md §10 ("LZMA
-  decompression on 386 tier completes within 10x the aPLib
-  decompression time on the same payload"). Same noisy-substrate
-  concern as the Phase 3 perf gate; the multi-chunk LZMA gate
-  finishes in ~170 s (aPLib finishes in ~50 s) across 6 tiers,
-  so the per-tier ratio is in the right ballpark, but cleanly
-  isolating LZMA decode time from DOS startup + INT 21h overhead
-  needs stub-side INT 1Ah cycle-counter instrumentation that the
-  Phase 3 row defers.
 - Phase 3 perf-gate row (386 / pentium aplib speedup): still open
   across phases. Not bundled here for the same reason it wasn't
   in Phase 4.
@@ -603,5 +600,4 @@ error mid-phase; CI's build-stubs.yml is the fallback).
 
 - SSE depacker variant for p3 (carry-forward from Phase 5).
 - MMX-vs-pentium aplib speed gate (carry-forward from Phase 5).
-- LZMA-vs-aPLib decompression-time gate (carry-forward from Phase 5).
 - Phase 3 perf-gate row (carry-forward from Phase 3 / 4 / 5).

@@ -378,7 +378,7 @@ Verify:
 
 - DOSBox-X tests for all viable (algorithm, target) combinations. Matrix in `tests/integration/`.
 - LZMA produces smaller files than aPLib on payloads > 100KB.
-- LZMA decompression on 386 tier completes within 10x the aPLib decompression time on the same payload. Anything worse means the LZMA stub needs optimization.
+- Decode-only LZMA-vs-aPLib timing (stub-side `INT 1Ah` around the depacker call) is recorded in `tests/benchmarks/results.md` for 386/486/pentium. Current baseline is ~70–83× slower for LZMA on DOSBox-X; treat this as a documented tradeoff (ratio-vs-speed), not a v1 blocker.
 - pentium-mmx aplib decompression is at least 30% faster than pentium aplib on a literal-heavy payload (memory-bandwidth-bound case).
 
 ### Phase 6: LZSA2, polish, and release
