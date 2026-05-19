@@ -541,7 +541,7 @@ error mid-phase; CI's build-stubs.yml is the fallback).
   against the older committed blobs — they need the new blobs to
   land first.
 
-**Run-after-extract: host-side shipped, stub-side deferred to v1.1**
+**Run-after-extract: fully shipped in v1.1**
 
 - [x] CLI: `--run-after <command>` on `doskrunch pack`. Accepts
       a NUL-terminated printable-ASCII string up to 127 bytes (the
@@ -561,18 +561,19 @@ error mid-phase; CI's build-stubs.yml is the fallback).
       when the flag is set.
 - [x] Stub.c / stub_lzma.c: read the run_after_offset from the
       header and reserve `RUN_AFTER_BUF = 128` bytes of BSS for the
-      command. The fields are read-and-ignore (`(void)flags;` etc.)
-      pending the v1.1 EXEC wiring.
-- [ ] **Deferred: stub-side INT 21h/4Bh EXEC.** Watcom's
-      `system(g_run_after)` is the obvious wrapper but adds
-      ~4.5 KiB of COMMAND.COM lookup + spawn machinery, which
-      pushes the 8086 blob from 6746 to 11234 bytes (past its 8 KiB
-      hard ceiling). The cheaper path is a hand-rolled inline-asm
-      wrapper around INT 21h/4Bh (parameter block + counted command
-      line + child FCB / SS:SP handling) but needs careful real-DOS
-      edge-case testing for error paths, errorlevel propagation, and
-      child-PSP setup. Left for v1.1; the archive format is stable
-      so a v1.1 stub can pick up SFXs packed today.
+      command.
+- [x] **v1.1: stub-side INT 21h/4Bh EXEC.** `stubs/src/exec_dos.asm`
+      — an ~60-byte cpu-8086-clean wrapper that saves SS:SP+DS in
+      CS-relative words, issues INT 21h/4Bh, restores SS:SP+DS+BP+ES
+      after the call, and returns 0 on success. Linked into all 14
+      tier blobs; blob sizes all stay within per-tier hard ceilings
+      (aplib_8086.bin grows from 6746 to 7082 bytes, still under the
+      8 KiB ceiling). Both stub.c (small model) and stub_lzma.c
+      (compact model) split g_run_after at the first space to
+      separate prog-name from args, build the counted command line,
+      fill the 14-byte EXEC parameter block, close self, and call
+      exec_dos(). `dosbox_run_after.rs` gate covers 8086 + 386
+      (with args) + LZMA/386.
 
 **Phase 6 verify**
 

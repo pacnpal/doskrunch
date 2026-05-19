@@ -50,15 +50,28 @@ typedef unsigned long  u32;
 static u8  g_src[APLIB_SRC_SIZE];
 static u8  g_buf[BUF_SIZE];
 
-/* Run-after-extract command buffer (Phase 6, host-side only today).
- * Matches host/src/archive.rs::RUN_AFTER_MAX_LEN. The BSS slot
- * reserves the space; the actual reading-and-EXEC is deferred to
- * v1.1 — see the longer note at the bottom of main() for why
- * Watcom's system() blew the 8086 stub-size budget. The v1.1 stub
- * revision will use this buffer without changing the archive
- * format. */
+/* Run-after-extract command buffer (v1.1).
+ * Matches host/src/archive.rs::RUN_AFTER_MAX_LEN.
+ * Read from the archive at archive_off+run_after_offset after extraction
+ * and then split into prog-name (DS:DX for INT 21h/4Bh) and args. */
 #define RUN_AFTER_BUF 128u
 static char g_run_after[RUN_AFTER_BUF];
+
+/* EXEC (INT 21h/4Bh) parameter block. 14 bytes, filled at run-after time.
+ * Layout (Ralf Brown's Interrupt List, function 4Bh type 0):
+ *   +00 u16  env_seg:     0 = inherit parent environment
+ *   +02 u16  cmdline_off: near offset (in DS) of counted command line
+ *   +04 u16  cmdline_seg: segment of counted command line = DS
+ *   +06 u16  fcb1_off:    near offset of default FCB1 in parent PSP (0x5C)
+ *   +08 u16  fcb1_seg:    segment of FCB1 = PSP segment
+ *   +0A u16  fcb2_off:    near offset of default FCB2 in parent PSP (0x6C)
+ *   +0C u16  fcb2_seg:    segment of FCB2 = PSP segment */
+static u16  g_exec_pb[7];
+
+/* Counted DOS command line for the EXEC parameter block.
+ * Format: 1-byte length (not counting the CR) + optional " "+args + CR.
+ * Worst case: 1 (len) + 1 (space) + 126 (max args) + 1 (CR) = 129 bytes. */
+static char g_exec_cmdline[130];
 
 /* Archive header flag bits. Must match host/src/archive.rs::flags. */
 #define FLAG_RUN_AFTER     0x0001u
@@ -134,6 +147,25 @@ static void putu32(unsigned long val)
     puts2(buf + i);
 }
 #endif /* DKRUNCH_BENCH_RDTSC */
+
+/* INT 21h/4Bh EXEC primitive. prog_si and pb_di are near offsets within
+ * DS of the program path and EXEC parameter block, respectively.
+ * Implemented in stubs/src/exec_dos.asm (cpu 8086, linked into every tier).
+ * Returns 0 if the child ran and exited; nonzero on EXEC load failure.
+ * SS:SP, DS, ES, and BP are all preserved across this call. */
+extern unsigned exec_dos(u16 prog_si, u16 pb_di);
+#pragma aux exec_dos "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
+
+/* Inline helper: return the current DS register value. Used to fill the
+ * segment fields in g_exec_pb (cmdline_seg) at run-after time. */
+static u16 get_ds(void);
+#pragma aux get_ds = "mov ax, ds" value [ax] modify exact [ax];
+
+/* Inline helper: return our PSP segment via INT 21h/51h (DOS 2.0+).
+ * PSP:0x5C and PSP:0x6C are used as the default FCB1/FCB2 pointers in
+ * the EXEC parameter block, matching the DOS convention. */
+static u16 get_psp_seg(void);
+#pragma aux get_psp_seg = "mov ah, 0x51" "int 0x21" value [bx] modify exact [ax bx];
 
 /* LZSA2 raw-block decompressor (Phase 6). Same Watcom small-model
  * regparm ABI as aplib_depack — src in SI, dst in DI, return in AX.
@@ -471,29 +503,77 @@ int main(int argc, char **argv)
         puts2("\r\n");
     }
 
-    /* Run-after-extract (Phase 6 host-side; stub-side deferred to
-     * v1.1). The host writes the RUN_AFTER flag and a NUL-terminated
-     * command line at `archive_off + run_after_offset` so `doskrunch
-     * inspect` shows it and any future stub revision can pick it up
-     * without an archive-format change. The stub does NOT invoke the
-     * command yet:
-     *
-     * The obvious path is Watcom's `system(g_run_after)`, but pulling
-     * COMMAND.COM lookup + the C-runtime spawn machinery into the
-     * stub adds ~4.5 KiB and pushes the 8086 blob past its 8 KiB
-     * hard ceiling (measured: aplib_8086.bin would land at 11234
-     * bytes). The cheaper path is a hand-rolled inline-asm wrapper
-     * around INT 21h/4Bh (parameter block + counted command line) —
-     * call it ~100 bytes — but it needs careful edge-case testing on
-     * real DOS for child-process FCB / SS:SP / errorlevel handling.
-     *
-     * Deferred so the v1 SFX stays inside its stub budgets. (void)
-     * casts below suppress "set but not used" warnings on flags /
-     * run_after_offset / g_run_after, all of which the v1.1 stub
-     * revision will start reading. */
-    (void)flags;
-    (void)run_after_offset;
-    (void)g_run_after;
+    /* Run-after-extract (v1.1): INT 21h/4Bh EXEC. */
+    if (flags & FLAG_RUN_AFTER) {
+        unsigned got = 0;
+        char *space;
+        char *args;
+        unsigned args_len;
+        u16 ds_val;
+        u16 psp;
+
+        /* Seek to and read the command string. run_after_offset is the
+         * byte offset of the NUL-terminated command relative to the
+         * start of the DKCH archive header (archive_off). Skip the
+         * whole run-after block on any I/O error; the files are already
+         * extracted so the SFX exit remains clean. */
+        if (lseek(self, (long)archive_off + (long)run_after_offset, SEEK_SET) != -1L
+         && _dos_read(self, g_run_after, RUN_AFTER_BUF, &got) == 0
+         && got > 0u) {
+
+            /* Paranoia NUL-guard: the host always writes a NUL-
+             * terminated string, but defend against a truncated read. */
+            g_run_after[RUN_AFTER_BUF - 1] = '\0';
+
+            /* Split at first space: left half = program name (NUL-
+             * terminated in place), right half = args (may be empty). */
+            space = (char *)memchr(g_run_after, ' ', RUN_AFTER_BUF);
+            if (space != 0) {
+                *space = '\0';
+                args = space + 1;
+            } else {
+                args = g_run_after + (unsigned)strlen(g_run_after);
+            }
+            args_len = (unsigned)strlen(args);
+            if (args_len > 126u) args_len = 126u;
+
+            /* Build the counted command line for the EXEC param block:
+             *   byte 0: character count (not including the CR)
+             *   bytes 1..n: optional ' ' + args
+             *   last byte: CR (0x0D) terminator */
+            if (args_len > 0u) {
+                g_exec_cmdline[0] = (char)(args_len + 1u); /* +1 for leading space */
+                g_exec_cmdline[1] = ' ';
+                memcpy(&g_exec_cmdline[2], args, args_len);
+                g_exec_cmdline[(unsigned)args_len + 2u] = '\r';
+            } else {
+                g_exec_cmdline[0] = '\0'; /* zero-length tail */
+                g_exec_cmdline[1] = '\r';
+            }
+
+            /* Fill the EXEC parameter block. DS = DGROUP in small
+             * model, so near offsets are sufficient for far pointers.
+             * FP_OFF() extracts the near offset from any pointer;
+             * in small model this is just the pointer value. */
+            ds_val = get_ds();
+            psp    = get_psp_seg();
+            g_exec_pb[0] = 0u;                           /* env_seg: inherit */
+            g_exec_pb[1] = (u16)FP_OFF(g_exec_cmdline);  /* cmdline offset */
+            g_exec_pb[2] = ds_val;                        /* cmdline segment = DS */
+            g_exec_pb[3] = 0x005Cu;                       /* FCB1 offset (PSP:5Ch) */
+            g_exec_pb[4] = psp;                           /* FCB1 segment = PSP */
+            g_exec_pb[5] = 0x006Cu;                       /* FCB2 offset (PSP:6Ch) */
+            g_exec_pb[6] = psp;                           /* FCB2 segment = PSP */
+
+            /* Close self before exec so the child doesn't inherit our
+             * SFX file handle. exec_dos() returns when the child exits
+             * (or immediately on load failure). */
+            _dos_close(self);
+            exec_dos((u16)FP_OFF(g_run_after), (u16)FP_OFF(g_exec_pb));
+            /* exec_dos only returns on EXEC load failure; fall through. */
+            return 0;
+        }
+    }
 
 #ifdef DKRUNCH_BENCH_RDTSC
     /* Print accumulated decode-only TSC tick count for the benchmark
