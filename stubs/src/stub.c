@@ -97,6 +97,44 @@ static char g_run_after[RUN_AFTER_BUF];
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
 #pragma aux aplib_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
 
+/* RDTSC cycle-counter helper (bench builds only).
+ *
+ * Defined in stubs/src/rdtsc_helper.asm; linked into pentium+ bench blobs
+ * built with -DDKRUNCH_BENCH_RDTSC. Returns the low 32 bits of the IA32
+ * Time Stamp Counter as a Watcom 16-bit unsigned long (DX:AX). At 100 MHz
+ * a 32-bit TSC wraps in ~42 seconds — sufficient for sub-second decode
+ * measurements. Unsigned subtraction handles wrap-around correctly.
+ *
+ * Do NOT link rdtsc_helper.obj into 8086 / 286 / 386 / 486 tier blobs:
+ * those CPUs predate RDTSC and will fault with #UD (invalid opcode).
+ *
+ * Reused by the LZMA-vs-aPLib timing gate (issue #13) and the Phase 3
+ * 386/pentium speedup gate (issue #14); all three instrument the same
+ * depack call sites in this file. */
+#ifdef DKRUNCH_BENCH_RDTSC
+extern unsigned long rdtsc_lo(void);
+#pragma aux rdtsc_lo "*" value [dx ax] modify exact [ax dx];
+static unsigned long g_decode_ticks;
+
+/* Minimal decimal formatter for putu32() — avoids pulling in stdio. */
+static void putu32(unsigned long val)
+{
+    /* 10 decimal digits max for a 32-bit value, plus NUL. */
+    char buf[11];
+    int i = 10;
+    buf[10] = '\0';
+    if (val == 0UL) {
+        buf[--i] = '0';
+    } else {
+        while (val > 0UL) {
+            buf[--i] = (char)('0' + (int)(val % 10UL));
+            val /= 10UL;
+        }
+    }
+    puts2(buf + i);
+}
+#endif /* DKRUNCH_BENCH_RDTSC */
+
 /* LZSA2 raw-block decompressor (Phase 6). Same Watcom small-model
  * regparm ABI as aplib_depack — src in SI, dst in DI, return in AX.
  * Implemented in stubs/src/lzsa2_depack_{16,32}.asm (the Makefile
@@ -381,7 +419,15 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
+#ifdef DKRUNCH_BENCH_RDTSC
+                {
+                    unsigned long t0 = rdtsc_lo();
+                    produced = aplib_depack(g_src, g_buf);
+                    g_decode_ticks += rdtsc_lo() - t0;
+                }
+#else
                 produced = aplib_depack(g_src, g_buf);
+#endif
                 if (produced != usize) die("aplib size");
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
@@ -397,7 +443,15 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("lzsa2 csize");
                 if (usize > BUF_SIZE)       die("lzsa2 usize");
                 if (read_exact(self, g_src, csize) != 0) die("read lzsa2");
+#ifdef DKRUNCH_BENCH_RDTSC
+                {
+                    unsigned long t0 = rdtsc_lo();
+                    produced = lzsa2_depack(g_src, g_buf);
+                    g_decode_ticks += rdtsc_lo() - t0;
+                }
+#else
                 produced = lzsa2_depack(g_src, g_buf);
+#endif
                 if (produced != usize) die("lzsa2 size");
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write lzsa2");
@@ -440,6 +494,23 @@ int main(int argc, char **argv)
     (void)flags;
     (void)run_after_offset;
     (void)g_run_after;
+
+#ifdef DKRUNCH_BENCH_RDTSC
+    /* Print accumulated decode-only TSC tick count for the benchmark
+     * harness. The harness redirects SFX stdout to a file and parses
+     * this line to compute per-tier decode latency independently of
+     * DOS startup and INT 21h file I/O overhead.
+     *
+     * Format: "DKBENCH:decode_ticks=<decimal>\r\n"
+     * Example: "DKBENCH:decode_ticks=3141592\r\n"
+     *
+     * The host reads this from the captured output file after DOSBox-X
+     * exits. bench_tiers.rs looks for the "DKBENCH:decode_ticks=" prefix
+     * and parses the decimal integer that follows. */
+    puts2("DKBENCH:decode_ticks=");
+    putu32(g_decode_ticks);
+    puts2("\r\n");
+#endif
 
     _dos_close(self);
     return 0;

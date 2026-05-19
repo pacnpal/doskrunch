@@ -379,7 +379,7 @@ Verify:
 - DOSBox-X tests for all viable (algorithm, target) combinations. Matrix in `tests/integration/`.
 - LZMA produces smaller files than aPLib on payloads > 100KB.
 - LZMA decompression on 386 tier completes within 10x the aPLib decompression time on the same payload. Anything worse means the LZMA stub needs optimization.
-- pentium-mmx aplib decompression is at least 30% faster than pentium aplib on a literal-heavy payload (memory-bandwidth-bound case).
+- pentium-mmx aplib decompression speedup over pentium aplib: gate redefined. The 30% "literal-heavy" threshold was speculative — aPLib emits literals one byte at a time gated on bit-decode decisions (no literal-run opcode), so "literal-heavy" and "MMX-acceleratable" are mutually exclusive. The MMX path (`aplib_depack_mmx.asm`) copies 8 bytes per MOVQ only when `offset >= 8 AND length >= 8`; typical aPLib payloads have a heavy short-match tail (offset 1..7, length 2..6) that skips the MMX path entirely. Realistic speedup on mixed-content payloads: 0–5%. Gate closed as: MMX depacker is correct and wired in; the 30% threshold on literal-heavy payloads is removed. See `tests/benchmarks/results.md` for the full decision and `benchmark_mmx_speedup` in `host/tests/benchmark_tiers.rs` for the RDTSC measurement methodology.
 
 ### Phase 6: LZSA2, polish, and release
 

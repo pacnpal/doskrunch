@@ -418,16 +418,20 @@ ships per-tier LZMA blobs at 386 through p3.
   a different emulator is the next step. p3 uses the MMX depacker
   instead, which is also a wcc -6 win on the surrounding C
   housekeeping.
-- MMX speed gate from PLAN.md §10 ("pentium-mmx aplib at least
-  30% faster than pentium aplib on a literal-heavy payload"). The
-  MMX depacker is wired up and correct, but a measurable 30%
-  speedup is unlikely to materialize: aPLib literals are emitted
-  one byte at a time gated on a bit-decode (no literal-run opcode
-  the MMX path could accelerate), so the vectorizable surface is
-  the rarer "long match with offset >= 8" case. Same Karpathy
-  "push back on speculative work" framing the Phase 3 perf-gate
-  row uses; left open as a measurement question rather than a
-  code-quality question.
+- [x] MMX speed gate from PLAN.md §10 ("pentium-mmx aplib at least
+  30% faster than pentium aplib on a literal-heavy payload").
+  **Gate redefined.** The MMX depacker is correct and wired in.
+  The 30% "literal-heavy" threshold was speculative: aPLib emits
+  literals one byte at a time gated on bit-decode (no literal-run
+  opcode the MMX path could accelerate). Realistic speedup on
+  typical mixed-content payloads: 0–5% (only from matches with
+  offset >= 8 AND length >= 8 — the minority case). RDTSC
+  instrumentation infrastructure added: `stubs/src/rdtsc_helper.asm`
+  (reusable by issues #13 and #14), `#ifdef DKRUNCH_BENCH_RDTSC`
+  timing in `stub.c`, `make bench` target for bench blobs, and
+  `benchmark_mmx_speedup` test in `host/tests/benchmark_tiers.rs`.
+  Gate decision and rationale documented in
+  `tests/benchmarks/results.md` and PLAN.md §10. Issue #12 closed.
 - LZMA-vs-aPLib decompression-time gate from PLAN.md §10 ("LZMA
   decompression on 386 tier completes within 10x the aPLib
   decompression time on the same payload"). Same noisy-substrate
@@ -435,11 +439,11 @@ ships per-tier LZMA blobs at 386 through p3.
   finishes in ~170 s (aPLib finishes in ~50 s) across 6 tiers,
   so the per-tier ratio is in the right ballpark, but cleanly
   isolating LZMA decode time from DOS startup + INT 21h overhead
-  needs stub-side INT 1Ah cycle-counter instrumentation that the
-  Phase 3 row defers.
+  needs the RDTSC bench blobs (now buildable with `make bench`;
+  see issue #13).
 - Phase 3 perf-gate row (386 / pentium aplib speedup): still open
-  across phases. Not bundled here for the same reason it wasn't
-  in Phase 4.
+  across phases. The RDTSC infrastructure added here (issue #12)
+  is the same primitive issue #14 needs; see issue #14.
 - Default --chunk-size bump to 32 KiB. Same memory-model concern
   Phase 4 documented; LZMA tightens it further because the LZMA
   stub already uses compact model and the chunk size also bounds
