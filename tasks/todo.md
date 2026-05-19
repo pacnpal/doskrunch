@@ -537,14 +537,38 @@ error mid-phase; CI's build-stubs.yml is the fallback).
   against the older committed blobs — they need the new blobs to
   land first.
 
-**Pending follow-ups in Phase 6**
+**Run-after-extract: host-side shipped, stub-side deferred to v1.1**
 
-- Run-after-extract end-to-end. CLI flag (`--run-after "PROG.EXE
-  [args]"`), archive plumbing (NUL-terminated string at
-  `run_after_offset` after the per-file records), and INT 21h/4Bh
-  EXEC in both stub.c and stub_lzma.c. Wires through both stub
-  blobs so split into a separate commit after the blob rebuild
-  blocker clears.
+- [x] CLI: `--run-after <command>` on `doskrunch pack`. Accepts
+      a NUL-terminated printable-ASCII string up to 127 bytes (the
+      stub's `RUN_AFTER_BUF` cap minus the NUL). Validates via
+      `Archive::set_run_after`, which flips `flags::RUN_AFTER` and
+      stores the command bytes for serialization.
+- [x] Archive: `Archive::write` computes `run_after_offset` (header
+      size + per-file records) and emits the command bytes after the
+      file records. `Archive::read` parses them back and rejects
+      inconsistent flag/offset combinations. Four roundtrip tests:
+      offset round-trip, set_run_after validation, no-run-after
+      keeps offset zero, flag-vs-offset consistency at read time.
+- [x] CLI test coverage: roundtrip pack -> inspect verifies the
+      command + flag both appear; invalid-input test confirms the
+      CLI bails on non-printable bytes in the command.
+- [x] inspect: prints the run-after command line + archive offset
+      when the flag is set.
+- [x] Stub.c / stub_lzma.c: read the run_after_offset from the
+      header and reserve `RUN_AFTER_BUF = 128` bytes of BSS for the
+      command. The fields are read-and-ignore (`(void)flags;` etc.)
+      pending the v1.1 EXEC wiring.
+- [ ] **Deferred: stub-side INT 21h/4Bh EXEC.** Watcom's
+      `system(g_run_after)` is the obvious wrapper but adds
+      ~4.5 KiB of COMMAND.COM lookup + spawn machinery, which
+      pushes the 8086 blob from 6746 to 11234 bytes (past its 8 KiB
+      hard ceiling). The cheaper path is a hand-rolled inline-asm
+      wrapper around INT 21h/4Bh (parameter block + counted command
+      line + child FCB / SS:SP handling) but needs careful real-DOS
+      edge-case testing for error paths, errorlevel propagation, and
+      child-PSP setup. Left for v1.1; the archive format is stable
+      so a v1.1 stub can pick up SFXs packed today.
 
 **Phase 6 verify**
 

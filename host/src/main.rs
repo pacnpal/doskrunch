@@ -56,6 +56,14 @@ enum Cmd {
         /// regardless of the value here.
         #[arg(long, default_value_t = APLIB_CHUNK_INPUT)]
         chunk_size: usize,
+        /// Optional command line invoked via INT 21h/4Bh after the
+        /// SFX finishes extracting. Plain DOS argv: 8.3 program name
+        /// optionally followed by a space and args (e.g.
+        /// `"SETUP.EXE /Q"`). The program has to be one of the
+        /// extracted files. Capped at 127 printable-ASCII bytes
+        /// (matches the stub's RUN_AFTER_BUF cap).
+        #[arg(long)]
+        run_after: Option<String>,
     },
     /// Extract a doskrunch SFX on the host (no DOS required).
     Unpack {
@@ -131,6 +139,7 @@ fn main() -> Result<()> {
             target,
             preserve_timestamps,
             chunk_size,
+            run_after,
         } => {
             // All four algorithms ship as of Phase 6, so every arm
             // returns a Some(<ceiling>) and the chunk-size check
@@ -160,6 +169,7 @@ fn main() -> Result<()> {
                 target: target.to_archive(),
                 preserve_timestamps,
                 chunk_size,
+                run_after,
             })
         }
         Cmd::Unpack { input, dest } => unpack::unpack(unpack::UnpackOptions { input, dest }),

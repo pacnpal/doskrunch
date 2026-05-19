@@ -29,6 +29,11 @@ pub struct PackOptions {
     /// matches the stub's BSS budget; smaller values exist mostly for
     /// testing chunked decode paths.
     pub chunk_size: usize,
+    /// Optional command line invoked via INT 21h/4Bh after the SFX
+    /// finishes extracting. See `Archive::set_run_after` for the
+    /// validation rules; an `Err` from set_run_after surfaces as a
+    /// `pack()` error so the caller doesn't have to validate twice.
+    pub run_after: Option<String>,
 }
 
 pub fn pack(opts: PackOptions) -> Result<()> {
@@ -103,6 +108,11 @@ pub fn pack(opts: PackOptions) -> Result<()> {
     let mut archive = Archive::new(opts.algorithm, opts.target);
     if !opts.preserve_timestamps {
         archive.flags |= flags::REPRODUCIBLE;
+    }
+    if let Some(ref cmd) = opts.run_after {
+        archive
+            .set_run_after(cmd)
+            .map_err(|e| anyhow::anyhow!("--run-after: {}", e))?;
     }
 
     // Expand any directory inputs into the regular files they contain.
@@ -528,6 +538,7 @@ mod tests {
             target: TargetTier::I8086,
             preserve_timestamps: false,
             chunk_size: APLIB_CHUNK_INPUT,
+            run_after: None,
         }
     }
 

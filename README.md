@@ -122,6 +122,20 @@ CI rebuilds the stubs and fails the build if the committed blobs drift.
 Phase 5 and 6 deferred a few items that didn't pay for themselves in
 measurement:
 
+- **`--run-after` stub-side execution**. The host-side plumbing is
+  shipped: `doskrunch pack --run-after "MY.EXE /Q" out.exe ...`
+  validates the command, sets the archive's `RUN_AFTER` flag, writes
+  the NUL-terminated command bytes into the archive at
+  `run_after_offset`, and `doskrunch inspect` prints both. The DOS
+  stub reads the metadata but does NOT invoke the command yet. The
+  obvious wrapper, Watcom's `system()`, pulls in ~4.5 KiB of
+  COMMAND.COM lookup + spawn machinery and pushes the 8086 blob past
+  its 8 KiB hard ceiling. The cheaper path is a hand-rolled inline-
+  asm INT 21h/4Bh wrapper, which needs careful edge-case testing on
+  real DOS for FCB / SS:SP / errorlevel behavior. Deferred to v1.1
+  so v1 stays inside its stub-size budgets. The archive format is
+  stable, so a v1.1 stub can pick up existing run-after-tagged SFXs
+  without re-packing.
 - **SSE depacker variant for p3**. `stubs/src/aplib_depack_sse.asm` ships in
   the source tree with a `MOVUPS` 16-byte block copy, but isn't linked into
   `aplib_p3.bin`. Under DOSBox-X 2026.05.02 with `cputype=pentium_iii` the

@@ -50,6 +50,17 @@ typedef unsigned long  u32;
 static u8  g_src[APLIB_SRC_SIZE];
 static u8  g_buf[BUF_SIZE];
 
+/* Run-after-extract command buffer (Phase 6). Matches
+ * host/src/archive.rs::RUN_AFTER_MAX_LEN. The stub reads up to this
+ * many bytes from the archive at run_after_offset and passes them to
+ * system() once extraction completes. */
+#define RUN_AFTER_BUF 128u
+static char g_run_after[RUN_AFTER_BUF];
+
+/* Archive header flag bits. Must match host/src/archive.rs::flags. */
+#define FLAG_RUN_AFTER     0x0001u
+#define FLAG_REPRODUCIBLE  0x0004u
+
 /* Decompress an aPLib stream pointed to by `src` into `dst`. Returns the
  * decompressed byte count. Implemented in stubs/src/aplib_depack_16.asm
  * (ported from apultra's asm/8088/aplib_8088_small.S).
@@ -236,6 +247,8 @@ int main(int argc, char **argv)
     long self_size;
     u16 file_count;
     u16 i;
+    u16 flags;
+    u16 run_after_offset;
     u8 algo;
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
@@ -276,6 +289,8 @@ int main(int argc, char **argv)
      * BSS. The host's stub_for() routes by (algo, target), so seeing
      * algo == 3 here means a stub-vs-archive mismatch. */
     if (algo > 2) die("bad algo");
+    flags = rd_u16(hdr + 7);
+    run_after_offset = rd_u16(hdr + 15);
     file_count = rd_u16(hdr + 9);
 
     for (i = 0; i < file_count; i++) {
@@ -393,6 +408,30 @@ int main(int argc, char **argv)
         puts2(namebuf);
         puts2("\r\n");
     }
+
+    /* Run-after-extract (Phase 6 host-side; stub-side deferred to
+     * v1.1). The host writes the RUN_AFTER flag and a NUL-terminated
+     * command line at `archive_off + run_after_offset` so `doskrunch
+     * inspect` shows it and any future stub revision can pick it up
+     * without an archive-format change. The stub does NOT invoke the
+     * command yet:
+     *
+     * The obvious path is Watcom's `system(g_run_after)`, but pulling
+     * COMMAND.COM lookup + the C-runtime spawn machinery into the
+     * stub adds ~4.5 KiB and pushes the 8086 blob past its 8 KiB
+     * hard ceiling (measured: aplib_8086.bin would land at 11234
+     * bytes). The cheaper path is a hand-rolled inline-asm wrapper
+     * around INT 21h/4Bh (parameter block + counted command line) —
+     * call it ~100 bytes — but it needs careful edge-case testing on
+     * real DOS for child-process FCB / SS:SP / errorlevel handling.
+     *
+     * Deferred so the v1 SFX stays inside its stub budgets. (void)
+     * casts below suppress "set but not used" warnings on flags /
+     * run_after_offset / g_run_after, all of which the v1.1 stub
+     * revision will start reading. */
+    (void)flags;
+    (void)run_after_offset;
+    (void)g_run_after;
 
     _dos_close(self);
     return 0;

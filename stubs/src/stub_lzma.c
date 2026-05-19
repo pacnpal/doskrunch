@@ -67,6 +67,16 @@ typedef unsigned long  u32;
 static u8 g_lzma_src[LZMA_SRC_SIZE];
 static u8 g_lzma_buf[LZMA_BUF_SIZE];
 
+/* Run-after-extract command buffer (Phase 6). Matches
+ * host/src/archive.rs::RUN_AFTER_MAX_LEN and the stub.c constant of
+ * the same name. */
+#define RUN_AFTER_BUF 128u
+static char g_run_after[RUN_AFTER_BUF];
+
+/* Archive header flag bits. Must match host/src/archive.rs::flags. */
+#define FLAG_RUN_AFTER     0x0001u
+#define FLAG_REPRODUCIBLE  0x0004u
+
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
 
@@ -181,6 +191,8 @@ int main(int argc, char **argv)
     long self_size;
     u16 file_count;
     u16 i;
+    u16 flags;
+    u16 run_after_offset;
     u8 algo;
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
@@ -223,6 +235,8 @@ int main(int argc, char **argv)
      * dispatches by (algo, target), so seeing algo != 3 here means an
      * out-of-tree producer mis-targeted the archive. */
     if (algo != 3) die("lzma stub: not an lzma archive");
+    flags = rd_u16(hdr + 7);
+    run_after_offset = rd_u16(hdr + 15);
     file_count = rd_u16(hdr + 9);
 
     xz_crc32_init();
@@ -332,6 +346,16 @@ int main(int argc, char **argv)
     }
 
     xz_dec_microlzma_end(dec);
+
+    /* Run-after-extract: deferred to v1.1 for the same stub-budget
+     * reason documented in stubs/src/stub.c (system() pulls in
+     * ~4.5 KiB of COMMAND.COM lookup + C-runtime spawn machinery).
+     * The host writes the flag + offset + command bytes; this stub
+     * ignores them. */
+    (void)flags;
+    (void)run_after_offset;
+    (void)g_run_after;
+
     _dos_close(self);
     return 0;
 }
