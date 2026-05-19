@@ -33,7 +33,7 @@ the stub. Runs on the original 8088 IBM PC up through a Pentium III.
 gets its own per-tier stub blob. The 8086 tier is the default and
 covers the original 1981 IBM PC.
 
-The pentium-mmx and p2 stubs ship an MMX-accelerated aPLib depacker
+The pentium-mmx, p2, and p3 stubs ship an MMX-accelerated aPLib depacker
 (8-byte MOVQ block copy when offset and length are both ≥ 8; scalar
 `rep movsb` for short or overlapping matches; EMMS on exit).
 
