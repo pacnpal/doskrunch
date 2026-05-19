@@ -63,7 +63,13 @@ enum Cmd {
         /// extracted files; pack doesn't enforce that, since DOS
         /// resolves the name at extract time against the current
         /// directory and PATH. Capped at 127 printable-ASCII bytes
-        /// (the stub's RUN_AFTER_BUF cap).
+        /// (the stub's RUN_AFTER_BUF cap). Pack also fails if the
+        /// cumulative archive prefix (25-byte header + per-file
+        /// records, not counting chunk data) exceeds 65535 bytes —
+        /// the on-disk `run_after_offset` is a u16, so a pathologically
+        /// large file table can't address the command. Typical
+        /// payloads stay well under this; a packing run with hundreds
+        /// of small files might hit it.
         #[arg(long)]
         run_after: Option<String>,
     },

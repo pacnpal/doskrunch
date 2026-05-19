@@ -136,6 +136,18 @@ measurement:
   so v1 stays inside its stub-size budgets. The archive format is
   stable, so a v1.1 stub can pick up existing run-after-tagged SFXs
   without re-packing.
+
+  One format-level constraint worth flagging now: `--run-after`
+  encodes the command's archive byte offset in a u16, so the
+  cumulative archive prefix (25-byte header + sum of per-file
+  records, NOT counting the run-after command itself) has to fit
+  in 65,535 bytes. In practice that's roughly 16 KiB of file-record
+  framing — chunk count, names, CRC32s — independent of how much
+  the chunk data weighs. Packing a single big file with `--run-after`
+  always fits; packing thousands of small files might not. The
+  archive header CRC catches a header-side overflow at parse time;
+  `pack` itself bails with a clear "cumulative archive prefix
+  exceeds the 65535 byte u16 run_after_offset ceiling" error.
 - **SSE depacker variant for p3**. `stubs/src/aplib_depack_sse.asm` ships in
   the source tree with a `MOVUPS` 16-byte block copy, but isn't linked into
   `aplib_p3.bin`. Under DOSBox-X 2026.05.02 with `cputype=pentium_iii` the
