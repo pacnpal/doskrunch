@@ -48,6 +48,16 @@ WCC     := wcc
 WLINK   := wlink
 NASM    := nasm
 
+# LZMA stub variants (Phase 5) compile xz-embedded straight from
+# vendor/xz-embedded/ so we don't duplicate the upstream source under
+# stubs/. The CI workflow + the local build invocation both mount the
+# project root and run make from /work/stubs, so `../vendor/...` is
+# the correct relative path. See .github/workflows/build-stubs.yml.
+VENDOR_XZ := ../vendor/xz-embedded
+XZ_SRC    := $(VENDOR_XZ)/linux/lib/xz
+XZ_INC    := $(VENDOR_XZ)/linux/include/linux
+XZ_CFG    := $(VENDOR_XZ)/userspace
+
 # Watcom common flags: small memory model (`-ms`), max size optimization
 # (`-os`), DOS target (`-bt=dos`), quiet (`-zq`). The per-tier rules add
 # the CPU-architecture flag (`-0` .. `-6`).
@@ -69,7 +79,13 @@ all: \
 	$(OUTDIR)/aplib_pentium.bin \
 	$(OUTDIR)/aplib_pentium-mmx.bin \
 	$(OUTDIR)/aplib_p2.bin \
-	$(OUTDIR)/aplib_p3.bin
+	$(OUTDIR)/aplib_p3.bin \
+	$(OUTDIR)/lzma_386.bin \
+	$(OUTDIR)/lzma_486.bin \
+	$(OUTDIR)/lzma_pentium.bin \
+	$(OUTDIR)/lzma_pentium-mmx.bin \
+	$(OUTDIR)/lzma_p2.bin \
+	$(OUTDIR)/lzma_p3.bin
 
 # ----- shared NASM .obj rules ------------------------------------------
 # Each depacker .asm is `cpu 8086|386|pentium` and consumed by every
@@ -243,6 +259,170 @@ $(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_mmx.obj
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_p3.bin); \
 	  echo "aplib_p3.bin: $$SZ bytes (target ≤10240, hard ceiling 14336)"; \
 	  if [ $$SZ -gt 14336 ]; then echo "ERROR: p3 stub exceeds 14KB hard ceiling"; exit 1; fi
+
+# ----- LZMA tier blobs (Phase 5) ---------------------------------------
+#
+# Distinct from the aplib blobs because the LZMA decoder + workspace
+# blow past the aplib stub's small-model BSS budget. The host's
+# stub_for() dispatches by (algorithm, target) so a `--algo lzma`
+# pack at any 386+ tier picks the matching lzma_<tier>.bin; the
+# aplib stub remains the dispatch target for stored + aplib.
+#
+# Per-tier source files:
+#   stub_lzma.c          stubs/src/stub_lzma.c — LZMA-only stub.c
+#   xz_crc32.c           vendor/xz-embedded — CRC32 lookup table init
+#   xz_dec_lzma2.c       vendor/xz-embedded — LZMA2 + MicroLZMA decoder
+#
+# Each tier compiles all three under its own wcc flag so the .obj
+# files don't collide across tiers. We pass -DXZ_DEC_MICROLZMA so
+# xz-embedded exposes the MicroLZMA APIs that stub_lzma.c calls.
+#
+# All LZMA stubs need wcc -3 or higher: the LZMA decoder uses 32-bit
+# integer arithmetic that 8086 / 286 can't run in reasonable time
+# (PLAN.md §4 calls this out explicitly).
+
+# LZMA stubs use the COMPACT memory model (-mc): code is near (single
+# code segment), data is far (multiple data segments, far pointers
+# everywhere). The aplib stubs use small model (-ms, code+data ≤ 64 KB
+# each). The LZMA decoder state alone is bigger than small-model
+# malloc's 32 KB per-allocation cap (`struct xz_dec_microlzma` ≈ 32 KB
+# with default lc/lp/pb tables), so it has to live in a data segment
+# distinct from the rest of the stub. xz-embedded's bare `uint8_t *`
+# pointers become `uint8_t __far *` automatically under -mc, so we
+# don't have to patch the vendor source.
+XZ_CFLAGS_COMMON := -bt=dos -mc -os -zq -DXZ_DEC_MICROLZMA -i=$(XZ_INC) -i=$(XZ_SRC) -i=$(XZ_CFG)
+XZ_CFLAGS_386    := $(XZ_CFLAGS_COMMON) -3
+XZ_CFLAGS_486    := $(XZ_CFLAGS_COMMON) -4
+XZ_CFLAGS_P5     := $(XZ_CFLAGS_COMMON) -5
+XZ_CFLAGS_P6     := $(XZ_CFLAGS_COMMON) -6
+
+# stub_lzma.c is compact-model too so it can interop with xz-embedded.
+# Includes xz.h on the path.
+LZMA_STUB_CFLAGS_COMMON := -bt=dos -mc -os -zq -i=$(XZ_INC) -i=$(XZ_CFG)
+
+# 386 tier ---
+# Build from the Makefile dir (no cd) so the include paths in
+# LZMA_STUB_CFLAGS_COMMON resolve from there. The aplib stub rules
+# still cd into $(SRC) because they don't need any include path
+# resolution beyond Watcom's defaults.
+$(SRC)/stub_lzma_386.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -3 -fo=$@ $<
+
+$(SRC)/xz_crc32_386.obj: $(XZ_SRC)/xz_crc32.c
+	$(WCC) $(XZ_CFLAGS_386) -fo=$@ $<
+
+$(SRC)/xz_dec_lzma2_386.obj: $(XZ_SRC)/xz_dec_lzma2.c
+	$(WCC) $(XZ_CFLAGS_386) -fo=$@ $<
+
+$(OUTDIR)/lzma_386.bin: $(SRC)/stub_lzma_386.obj $(SRC)/xz_crc32_386.obj $(SRC)/xz_dec_lzma2_386.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_386.exe \
+	  file $(SRC)/stub_lzma_386.obj \
+	  file $(SRC)/xz_crc32_386.obj \
+	  file $(SRC)/xz_dec_lzma2_386.obj
+	@cp $(OUTDIR)/lzma_386.exe $(OUTDIR)/lzma_386.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_386.bin); \
+	  echo "lzma_386.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
+	  if [ $$SZ -gt 24576 ]; then echo "ERROR: lzma_386 stub exceeds 24KB hard ceiling"; exit 1; fi
+
+# 486 tier ---
+$(SRC)/stub_lzma_486.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -4 -fo=$@ $<
+
+$(SRC)/xz_crc32_486.obj: $(XZ_SRC)/xz_crc32.c
+	$(WCC) $(XZ_CFLAGS_486) -fo=$@ $<
+
+$(SRC)/xz_dec_lzma2_486.obj: $(XZ_SRC)/xz_dec_lzma2.c
+	$(WCC) $(XZ_CFLAGS_486) -fo=$@ $<
+
+$(OUTDIR)/lzma_486.bin: $(SRC)/stub_lzma_486.obj $(SRC)/xz_crc32_486.obj $(SRC)/xz_dec_lzma2_486.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_486.exe \
+	  file $(SRC)/stub_lzma_486.obj \
+	  file $(SRC)/xz_crc32_486.obj \
+	  file $(SRC)/xz_dec_lzma2_486.obj
+	@cp $(OUTDIR)/lzma_486.exe $(OUTDIR)/lzma_486.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_486.bin); \
+	  echo "lzma_486.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
+	  if [ $$SZ -gt 24576 ]; then echo "ERROR: lzma_486 stub exceeds 24KB hard ceiling"; exit 1; fi
+
+# pentium tier ---
+$(SRC)/stub_lzma_p5.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -5 -fo=$@ $<
+
+$(SRC)/xz_crc32_p5.obj: $(XZ_SRC)/xz_crc32.c
+	$(WCC) $(XZ_CFLAGS_P5) -fo=$@ $<
+
+$(SRC)/xz_dec_lzma2_p5.obj: $(XZ_SRC)/xz_dec_lzma2.c
+	$(WCC) $(XZ_CFLAGS_P5) -fo=$@ $<
+
+$(OUTDIR)/lzma_pentium.bin: $(SRC)/stub_lzma_p5.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_pentium.exe \
+	  file $(SRC)/stub_lzma_p5.obj \
+	  file $(SRC)/xz_crc32_p5.obj \
+	  file $(SRC)/xz_dec_lzma2_p5.obj
+	@cp $(OUTDIR)/lzma_pentium.exe $(OUTDIR)/lzma_pentium.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_pentium.bin); \
+	  echo "lzma_pentium.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
+	  if [ $$SZ -gt 24576 ]; then echo "ERROR: lzma_pentium stub exceeds 24KB hard ceiling"; exit 1; fi
+
+# pentium-mmx tier --- (same wcc -5 codegen as pentium; distinct blob)
+$(SRC)/stub_lzma_pmmx.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -5 -fo=$@ $<
+
+$(OUTDIR)/lzma_pentium-mmx.bin: $(SRC)/stub_lzma_pmmx.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_pentium-mmx.exe \
+	  file $(SRC)/stub_lzma_pmmx.obj \
+	  file $(SRC)/xz_crc32_p5.obj \
+	  file $(SRC)/xz_dec_lzma2_p5.obj
+	@cp $(OUTDIR)/lzma_pentium-mmx.exe $(OUTDIR)/lzma_pentium-mmx.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_pentium-mmx.bin); \
+	  echo "lzma_pentium-mmx.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
+	  if [ $$SZ -gt 24576 ]; then echo "ERROR: lzma_pentium-mmx stub exceeds 24KB hard ceiling"; exit 1; fi
+
+# p2 tier --- (wcc -6 / P6 codegen)
+$(SRC)/stub_lzma_p6.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -6 -fo=$@ $<
+
+$(SRC)/xz_crc32_p6.obj: $(XZ_SRC)/xz_crc32.c
+	$(WCC) $(XZ_CFLAGS_P6) -fo=$@ $<
+
+$(SRC)/xz_dec_lzma2_p6.obj: $(XZ_SRC)/xz_dec_lzma2.c
+	$(WCC) $(XZ_CFLAGS_P6) -fo=$@ $<
+
+$(OUTDIR)/lzma_p2.bin: $(SRC)/stub_lzma_p6.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_dec_lzma2_p6.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_p2.exe \
+	  file $(SRC)/stub_lzma_p6.obj \
+	  file $(SRC)/xz_crc32_p6.obj \
+	  file $(SRC)/xz_dec_lzma2_p6.obj
+	@cp $(OUTDIR)/lzma_p2.exe $(OUTDIR)/lzma_p2.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_p2.bin); \
+	  echo "lzma_p2.bin: $$SZ bytes (target ≤18432, hard ceiling 24576)"; \
+	  if [ $$SZ -gt 24576 ]; then echo "ERROR: lzma_p2 stub exceeds 24KB hard ceiling"; exit 1; fi
+
+# p3 tier --- (same wcc -6 codegen; distinct blob like the aplib side)
+$(SRC)/stub_lzma_p3.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -6 -fo=$@ $<
+
+$(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_dec_lzma2_p6.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_p3.exe \
+	  file $(SRC)/stub_lzma_p3.obj \
+	  file $(SRC)/xz_crc32_p6.obj \
+	  file $(SRC)/xz_dec_lzma2_p6.obj
+	@cp $(OUTDIR)/lzma_p3.exe $(OUTDIR)/lzma_p3.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_p3.bin); \
+	  echo "lzma_p3.bin: $$SZ bytes (target ≤20480, hard ceiling 28672)"; \
+	  if [ $$SZ -gt 28672 ]; then echo "ERROR: lzma_p3 stub exceeds 28KB hard ceiling"; exit 1; fi
 
 clean:
 	rm -f $(OUTDIR)/*.exe $(OUTDIR)/*.bin

@@ -1244,8 +1244,14 @@ XZ_EXTERN enum xz_ret xz_dec_microlzma_run(struct xz_dec_microlzma *s_ptr,
 		 * round number and much more than users of this code should
 		 * ever need.
 		 */
+		/* doskrunch patch: cast to uint32_t so 16-bit C compilers
+		 * (Open Watcom -ms / -mc) evaluate `3 << 30` in 32-bit
+		 * width. Without the cast, `3U` is a 16-bit `unsigned
+		 * int` and the shift is undefined behavior; Watcom
+		 * truncates to 0, which made every compressed-size
+		 * check return XZ_DATA_ERROR. */
 		if (s->lzma2.compressed < RC_INIT_BYTES
-				|| s->lzma2.compressed > (3U << 30))
+				|| s->lzma2.compressed > ((uint32_t)3 << 30))
 			return XZ_DATA_ERROR;
 
 		if (!rc_read_init(&s->rc, b))
@@ -1294,8 +1300,11 @@ XZ_EXTERN struct xz_dec_microlzma *xz_dec_microlzma_alloc(enum xz_mode mode,
 {
 	struct xz_dec_microlzma *s;
 
-	/* Restrict dict_size to the same range as in the LZMA2 code. */
-	if (dict_size < 4096 || dict_size > (3U << 30))
+	/* Restrict dict_size to the same range as in the LZMA2 code.
+	 * doskrunch patch: cast to uint32_t so 16-bit C compilers
+	 * evaluate `3 << 30` in 32-bit width — see the matching note
+	 * in rc_read_init above for details. */
+	if (dict_size < 4096 || dict_size > ((uint32_t)3 << 30))
 		return NULL;
 
 	s = kmalloc(sizeof(*s), GFP_KERNEL);

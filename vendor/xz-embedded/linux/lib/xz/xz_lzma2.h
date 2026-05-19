@@ -10,10 +10,20 @@
 #ifndef XZ_LZMA2_H
 #define XZ_LZMA2_H
 
-/* Range coder constants */
+/* Range coder constants
+ *
+ * doskrunch patch: RC_TOP_VALUE casts to uint32_t so 16-bit C
+ * compilers (Open Watcom -ms / -mc, used by the doskrunch DOS stub)
+ * evaluate `1 << 24` in 32-bit width. Without the cast `1` is a
+ * 16-bit `int` and the shift is undefined behavior; Watcom truncates
+ * to 0, which made rc_normalize's `if (rc->range < RC_TOP_VALUE)`
+ * always false and the range decoder never refilled from input.
+ *
+ * RC_BIT_MODEL_TOTAL stays as a plain `1 << 11` — that fits in an
+ * `int` on every reasonable target, including 16-bit. */
 #define RC_SHIFT_BITS 8
 #define RC_TOP_BITS 24
-#define RC_TOP_VALUE (1 << RC_TOP_BITS)
+#define RC_TOP_VALUE ((uint32_t)1 << RC_TOP_BITS)
 #define RC_BIT_MODEL_TOTAL_BITS 11
 #define RC_BIT_MODEL_TOTAL (1 << RC_BIT_MODEL_TOTAL_BITS)
 #define RC_MOVE_BITS 5

@@ -45,6 +45,13 @@ const APLIB_PENTIUM_MMX: &[u8] = include_bytes!("../../stubs/blobs/aplib_pentium
 const APLIB_P2: &[u8] = include_bytes!("../../stubs/blobs/aplib_p2.bin");
 const APLIB_P3: &[u8] = include_bytes!("../../stubs/blobs/aplib_p3.bin");
 
+const LZMA_386: &[u8] = include_bytes!("../../stubs/blobs/lzma_386.bin");
+const LZMA_486: &[u8] = include_bytes!("../../stubs/blobs/lzma_486.bin");
+const LZMA_PENTIUM: &[u8] = include_bytes!("../../stubs/blobs/lzma_pentium.bin");
+const LZMA_PENTIUM_MMX: &[u8] = include_bytes!("../../stubs/blobs/lzma_pentium-mmx.bin");
+const LZMA_P2: &[u8] = include_bytes!("../../stubs/blobs/lzma_p2.bin");
+const LZMA_P3: &[u8] = include_bytes!("../../stubs/blobs/lzma_p3.bin");
+
 /// Returns the prebuilt stub blob for the given (algorithm, tier), or an
 /// error if the combination isn't shipped yet.
 pub fn stub_for(algo: Algorithm, target: TargetTier) -> Result<&'static [u8], String> {
@@ -57,9 +64,16 @@ pub fn stub_for(algo: Algorithm, target: TargetTier) -> Result<&'static [u8], St
         (Algorithm::Stored | Algorithm::Aplib, TargetTier::PentiumMmx) => Ok(APLIB_PENTIUM_MMX),
         (Algorithm::Stored | Algorithm::Aplib, TargetTier::P2) => Ok(APLIB_P2),
         (Algorithm::Stored | Algorithm::Aplib, TargetTier::P3) => Ok(APLIB_P3),
+        (Algorithm::Lzma, TargetTier::I386) => Ok(LZMA_386),
+        (Algorithm::Lzma, TargetTier::I486) => Ok(LZMA_486),
+        (Algorithm::Lzma, TargetTier::Pentium) => Ok(LZMA_PENTIUM),
+        (Algorithm::Lzma, TargetTier::PentiumMmx) => Ok(LZMA_PENTIUM_MMX),
+        (Algorithm::Lzma, TargetTier::P2) => Ok(LZMA_P2),
+        (Algorithm::Lzma, TargetTier::P3) => Ok(LZMA_P3),
         (a, t) => Err(format!(
             "no prebuilt stub for ({}, {}); shipped in this build: \
-             (stored|aplib, 8086|286|386|486|pentium|pentium-mmx|p2|p3)",
+             (stored|aplib, 8086|286|386|486|pentium|pentium-mmx|p2|p3) \
+             + (lzma, 386|486|pentium|pentium-mmx|p2|p3)",
             a.name(),
             t.name()
         )),
