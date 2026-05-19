@@ -46,7 +46,7 @@ DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tier
 
 1. **Literals** are emitted one byte at a time, gated on bit-decode decisions. There is no "literal run of length N" opcode (unlike LZMA or LZSA2). `MOVQ` cannot accelerate the literal path — each literal requires a bit-decode first.
 
-2. **Matches** copy `cx` bytes with `a32 rep movsb`. The MMX path (`aplib_depack_mmx.asm`) replaces this with an 8-byte `MOVQ` loop, but only when **both** conditions hold: `offset >= 8` (no overlap) AND `length >= 8`. Short matches — the canonical zeros-run case (offset=1, length=1..7) — fall through to scalar `rep movsb`.
+2. **Matches** copy `cx` bytes with `a32 rep movsb`. The MMX path (`aplib_depack_mmx.asm`) replaces this with an 8-byte `MOVQ` loop, but only when **both** conditions hold: `offset >= 8` AND `length >= 8`. The `offset >= 8` floor matches the 8-byte MOVQ stride, so each load reads bytes the previous store already wrote — `length` may still exceed `offset` (classical LZ77 overlap) and stay safe. Short matches — the canonical zeros-run case (offset=1, length=1..7) — fall through to scalar `rep movsb`.
 
 3. **Typical aPLib payload distribution** has a heavy short-match tail. On the 500 KiB synthetic payload (25% ASCII text, 25% zeros, 25% LCG-random, 25% repeated 16-byte pattern), the zeros quarter compresses almost entirely to offset-1 run-length matches — exactly the case the MMX path skips. The repeated-pattern quarter produces some longer matches with small offsets (< 8 bytes), also skipping MMX. Only text and pattern sections with match offsets ≥ 8 AND lengths ≥ 8 benefit.
 
@@ -54,7 +54,7 @@ DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tier
 
 ### Redefined gate
 
-The MMX depacker (`aplib_depack_mmx.asm`) is correct, linked into pentium-mmx / p2 / p3 blobs, and provides a modest speedup on match-heavy payloads with long, non-overlapping matches. The 30% "literal-heavy" threshold was speculative — aPLib literals are not run-coded, so "literal-heavy" and "MMX-acceleratable" are mutually exclusive. The gate is closed as:
+The MMX depacker (`aplib_depack_mmx.asm`) is correct, linked into pentium-mmx / p2 / p3 blobs, and provides a modest speedup on match-heavy payloads with long matches whose offset is also >= 8. The 30% "literal-heavy" threshold was speculative — aPLib literals are not run-coded, so "literal-heavy" and "MMX-acceleratable" are mutually exclusive. The gate is closed as:
 
 > **Gate redefined**: pentium-mmx aPLib decompression is faster than pentium on payloads with a high proportion of long back-references (offset ≥ 8, length ≥ 8). The realistic speedup on typical mixed-content payloads is 0–5%. The 30% threshold applied to "literal-heavy" payloads is removed because aPLib literals have no vector-copyable structure.
 

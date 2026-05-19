@@ -613,8 +613,10 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
             the literal path — each literal requires a bit-decode first.\n\
          2. **Matches** copy `cx` bytes with `a32 rep movsb`. The MMX path (`aplib_depack_mmx.asm`) \
             replaces this with an 8-byte MOVQ loop, but only when **both** conditions hold: \
-            `offset >= 8` (no overlap) AND `length >= 8`. Short matches (the canonical \
-            zeros-run case: offset=1, length=1..7) fall through to scalar `rep movsb`.\n\
+            `offset >= 8` AND `length >= 8`. The `offset >= 8` floor matches the 8-byte MOVQ \
+            stride, so each load reads bytes the previous store already wrote — `length` may \
+            still exceed `offset` (classical LZ77 overlap) and stay safe. Short matches (the \
+            canonical zeros-run case: offset=1, length=1..7) fall through to scalar `rep movsb`.\n\
          3. **Typical aPLib payload distribution** has a heavy short-match tail. On the 500 KiB \
             synthetic payload (25% text, 25% zeros, 25% LCG random, 25% repeated 16-byte pattern), \
             the zeros quarter compresses almost entirely to offset-1 run-length matches — exactly \
@@ -626,8 +628,8 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
             copies — a description that fits bulk memcpy, not aPLib's bitstream decoder.\n\
          \n\
          **Redefined gate**: the MMX depacker (`aplib_depack_mmx.asm`) is correct and wired in. \
-         It provides a small speedup on match-heavy payloads with long, non-overlapping matches. \
-         The 30% literal-heavy threshold is not achievable because aPLib literals are not run-coded. \
+         It provides a small speedup on match-heavy payloads with long matches whose offset is \
+         also >= 8. The 30% literal-heavy threshold is not achievable because aPLib literals are not run-coded. \
          The gate is closed as \"infrastructure shipped, unrealistic threshold removed.\"\n\
          \n\
          **Decode-only timing methodology**: RDTSC-instrumented bench blobs (`make bench` in \
