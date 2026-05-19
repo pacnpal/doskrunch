@@ -846,7 +846,8 @@ impl std::fmt::Display for ArchiveError {
                 compressed,
             } => write!(
                 f,
-                "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, overflowing the u16 per-chunk size field"
+                "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, exceeding the {} byte stub g_src ceiling",
+                APLIB_MAX_COMPRESSED_CHUNK,
             ),
             Self::AplibCompress(msg) => write!(f, "{msg}"),
             Self::LzmaChunkOverflow {

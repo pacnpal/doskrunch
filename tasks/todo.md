@@ -391,13 +391,15 @@ ships per-tier LZMA blobs at 386 through p3.
       the +23 unit tests are LZMA codec coverage + archive LZMA
       builder + roundtrip CLI LZMA rejection).
 - [x] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
-      green across all 15 ignored DOSBox-X gates locally under
+      green across all 14 ignored DOSBox-X gates locally under
       dosbox-x 2026.05.02 (was 11 in Phase 4): the 11 existing
       gates plus dosbox_aplib_new_tiers, dosbox_lzma_all_tiers,
-      dosbox_lzma_large, benchmark_tiers (env-var-gated fast
-      skip). The 8-tier dosbox_stored_all_tiers and 8-tier
-      dosbox_aplib_large gates each test 8 tier-runs, so total
-      tier-runs covered is roughly 30 across the suite.
+      and dosbox_lzma_large. benchmark_tiers is also `#[ignore]`-d
+      but additionally requires `DOSKRUNCH_RUN_BENCHMARK=1`, so
+      it fast-skips under the plain `--ignored` invocation and
+      isn't counted here. The 8-tier dosbox_stored_all_tiers and
+      8-tier dosbox_aplib_large gates each test 8 tier-runs, so
+      total tier-runs covered is roughly 30 across the suite.
 - [x] Stub blob count: 8 aplib + 6 LZMA = 14 blobs (was 3 after
       Phase 3, 3 after Phase 4). All within hard ceilings.
 - [x] PLAN.md §10 "LZMA beats aPLib > 100 KB" gate met by the

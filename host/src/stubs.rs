@@ -23,16 +23,22 @@
 //!     copy hangs on multi-chunk payloads; left for follow-up. See
 //!     `stubs/blobs/README.md` for the full deferral note.
 //!
-//! Each blob is a complete Watcom-built DOS .EXE that dispatches at
-//! runtime on the archive's algorithm byte and handles both `stored`
-//! (0) and `aplib` (1) chunks. The host returns the matching blob for
-//! both `Algorithm::Stored` and `Algorithm::Aplib` on the requested
-//! `--target` tier.
+//! Each `aplib_<tier>.bin` is a complete Watcom-built DOS .EXE that
+//! dispatches at runtime on the archive's algorithm byte and handles
+//! both `stored` (0) and `aplib` (1) chunks. The host returns the
+//! matching aplib blob for both `Algorithm::Stored` and
+//! `Algorithm::Aplib` on the requested `--target` tier.
 //!
-//! LZMA stubs (`lzma_<tier>.bin` for 386..p3) land later in Phase 5 —
-//! they are NOT unified with the aplib blob via runtime dispatch because
-//! their working-set footprint (LZMA range decoder + dict buffer)
-//! blows past the aplib stub's small-model BSS budget.
+//! Phase 5 also ships six LZMA blobs (`lzma_<tier>.bin` for 386..p3).
+//! These are LZMA-only — they require the archive's algorithm byte
+//! to be `lzma` (3) and die loudly on anything else. The host's
+//! `stub_for()` routes `Algorithm::Lzma` at 386+ to the matching
+//! `lzma_<tier>.bin` and never to an aplib blob. The LZMA blobs are
+//! NOT unified with the aplib blob via runtime dispatch because their
+//! working-set footprint (LZMA range decoder + dict buffer) blows
+//! past the aplib stub's small-model BSS budget; the LZMA stub is
+//! built compact-model (`-mc`) for the same reason. See
+//! `stubs/blobs/README.md` for the per-tier matrix and size budgets.
 
 use crate::archive::{Algorithm, TargetTier};
 

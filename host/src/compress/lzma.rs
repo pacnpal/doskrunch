@@ -117,9 +117,16 @@ pub const PROPS_PB: u32 = 2;
 pub const MICROLZMA_PROPS_BYTE: u8 = !(((PROPS_PB * 5 + PROPS_LP) * 9 + PROPS_LC) as u8);
 
 /// Compress `data` to a MicroLZMA stream. Returns the bytes to store
-/// on disk. The first byte is `MICROLZMA_PROPS_BYTE`; the remaining
-/// bytes are the raw LZMA1 range-coded payload (no EOS marker, no
-/// trailing properties or sizes).
+/// on disk.
+///
+/// Empty input is a special case: `compress(&[], _)` returns an empty
+/// `Vec` with no properties byte. The DKCH per-chunk header carries
+/// usize=0 for empty chunks, so the stub never reaches
+/// `xz_dec_microlzma_run` for one and skipping the framing byte saves
+/// one byte per empty chunk on disk. Non-empty input produces output
+/// whose first byte is `MICROLZMA_PROPS_BYTE`; the remaining bytes are
+/// the raw LZMA1 range-coded payload (no EOS marker, no trailing
+/// properties or sizes).
 ///
 /// The `dict_size` argument controls the encoder's match-finder window
 /// in bytes. Smaller dict = less compression but lower decoder RAM at
