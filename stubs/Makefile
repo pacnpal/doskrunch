@@ -38,13 +38,17 @@
 #     CPU. The depacker has no BSWAP / CMPXCHG / etc. opportunities;
 #     the win is again on the C side.
 #   * pentium-mmx/p2 link aplib_depack_mmx.asm — an MMX-accelerated
-#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy only
-#     when the back-reference offset is >= 8 AND length is >= 8 (no
-#     overlap); short matches and overlapping matches (offset < length,
-#     the canonical run-length-on-zeros case) stay on the scalar
-#     `rep movsb` path the pentium tier uses. EMMS is emitted on exit
-#     unconditionally so a future x87 user can't see stale MMX tag
-#     words.
+#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy when
+#     the back-reference offset is >= 8 AND length is >= 8. The
+#     offset >= 8 floor matches the MOVQ stride, so each 8-byte load
+#     reads bytes the previous 8-byte store already wrote; length >
+#     offset is therefore still safe as long as offset stays at or
+#     above the chunk stride. Matches with offset < 8 (the canonical
+#     compression-of-zeros case) would have MOVQ pull bytes that
+#     hadn't been written yet, so they stay on the scalar `rep movsb`
+#     path — same path the pentium tier uses unconditionally. EMMS
+#     is emitted on exit unconditionally so a future x87 user can't
+#     see stale MMX tag words.
 #   * p3 links aplib_depack_sse.asm — an SSE-accelerated aPLib depacker
 #     with a 16-byte MOVUPS block copy path when offset >= 16 AND
 #     length >= 16, scalar `rep movsb` fallback otherwise.
@@ -283,8 +287,12 @@ $(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lz
 # ----- p3 tier ---------------------------------------------------------
 #
 # wcc -6 codegen + SSE aplib depacker. The SSE path copies 16 bytes per
-# MOVUPS when match offset >= 16 and length >= 16; short or potentially
-# overlapping matches stay on scalar `rep movsb`.
+# MOVUPS when match offset >= 16 AND length >= 16. The offset >= 16
+# floor matches the MOVUPS stride, so each 16-byte load reads bytes
+# the previous 16-byte store already wrote; length > offset is still
+# safe as long as offset stays at or above the chunk stride. Matches
+# with offset < 16 stay on scalar `rep movsb`, which copies byte-at-
+# a-time and correctly handles the classical LZ77 run-overlap case.
 
 $(SRC)/stub_p3.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p3.obj stub.c

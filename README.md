@@ -56,7 +56,7 @@ doskrunch unpack out.exe -d extracted/
 | `pentium`       | U/V pipe pairing. |
 | `pentium-mmx`   | MMX-accelerated match copy in the aplib depacker. |
 | `p2`            | Pentium Pro / P6 codegen + MMX baseline. |
-| `p3`            | SSE-accelerated aPLib match-copy path (MOVUPS 16-byte blocks on long non-overlapping matches). |
+| `p3`            | SSE-accelerated aPLib match-copy path (MOVUPS 16-byte blocks when match offset and length are both >= 16). |
 
 LZMA requires `--target 386` or higher. The CLI refuses `--algo lzma --target
 8086` (or `286`) with a clear error. Everything else works on every tier.
