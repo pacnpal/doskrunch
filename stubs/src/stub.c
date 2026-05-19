@@ -83,6 +83,18 @@ static u8  g_buf[BUF_SIZE];
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
 #pragma aux aplib_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
 
+/* LZSA2 raw-block decompressor (Phase 6). Same Watcom small-model
+ * regparm ABI as aplib_depack — src in SI, dst in DI, return in AX.
+ * Implemented in stubs/src/lzsa2_depack_{16,32}.asm (the Makefile
+ * picks the .obj per tier). Trust boundary: same caveats as
+ * aplib_depack apply — the depacker has no destination-capacity
+ * argument and stops at the LZSA2 EOD marker, so a corrupted block
+ * could walk DI past the end of g_buf. The host enforces
+ * LZSA2_CHUNK_INPUT = 16 KiB and rewrites a per-file CRC32 during
+ * pack; same trusted-producer threat model documented above. */
+extern unsigned int lzsa2_depack(const u8 *src, u8 *dst);
+#pragma aux lzsa2_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
+
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
 
@@ -258,7 +270,12 @@ int main(int argc, char **argv)
 
     if (hdr[4] != 1)  die("bad version");
     algo = hdr[5];
-    if (algo > 1) die("bad algo");
+    /* This stub handles algo 0 (stored), 1 (aplib), and 2 (lzsa2).
+     * LZMA (algo == 3) is in a separate per-tier blob (stub_lzma.c)
+     * because its decoder state + dict don't fit in our small-model
+     * BSS. The host's stub_for() routes by (algo, target), so seeing
+     * algo == 3 here means a stub-vs-archive mismatch. */
+    if (algo > 2) die("bad algo");
     file_count = rd_u16(hdr + 9);
 
     for (i = 0; i < file_count; i++) {
@@ -336,7 +353,7 @@ int main(int argc, char **argv)
             if (algo == 0) {
                 if (csize != usize) die("stored size mismatch");
                 if (copy_bytes(self, out, (u32)csize) != 0) die("copy");
-            } else {
+            } else if (algo == 1) {
                 /* aplib: read whole compressed chunk, depack, write out. */
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
@@ -345,6 +362,22 @@ int main(int argc, char **argv)
                 if (produced != usize) die("aplib size");
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
+                }
+            } else {
+                /* lzsa2 (algo == 2). Same shape as aplib, different
+                 * depacker. Per-chunk compressed cap matches
+                 * archive.rs::LZSA2_MAX_COMPRESSED_CHUNK = 17 KiB and
+                 * fits in g_src (APLIB_SRC_SIZE = 18464 B); the
+                 * uncompressed cap is LZSA2_CHUNK_INPUT = 16 KiB,
+                 * exactly BUF_SIZE. Buffers are shared with the aplib
+                 * path so the stub doesn't pay extra BSS for LZSA2. */
+                if (csize > APLIB_SRC_SIZE) die("lzsa2 csize");
+                if (usize > BUF_SIZE)       die("lzsa2 usize");
+                if (read_exact(self, g_src, csize) != 0) die("read lzsa2");
+                produced = lzsa2_depack(g_src, g_buf);
+                if (produced != usize) die("lzsa2 size");
+                if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
+                    die("write lzsa2");
                 }
             }
         }
