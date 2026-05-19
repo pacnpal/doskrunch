@@ -83,9 +83,10 @@ works on every supported host.
   the flag + offset + command bytes; stub reads the metadata but
   doesn't invoke the command yet. Watcom's `system()` adds ~4.5 KiB
   and pushes the 8086 blob past its 8 KiB hard ceiling; a hand-rolled
-  INT 21h/4Bh wrapper is the v1.1 path. Archive format is stable so
-  SFXs packed with `--run-after` today will work transparently once
-  v1.1 ships.
+  INT 21h/4Bh wrapper is the v1.1 path. The `run_after_offset` is a u16,
+  which caps the total compressed archive size at roughly 64 KiB when
+  this flag is used. The format is stable, so SFXs packed today will
+  work transparently once v1.1 ships.
 - **SSE depacker variant for p3 not linked in.** `aplib_depack_sse.asm`
   ships in source but `aplib_p3.bin` uses the MMX depacker. Under
   DOSBox-X 2026.05.02 cputype=pentium_iii the SSE path hangs on
