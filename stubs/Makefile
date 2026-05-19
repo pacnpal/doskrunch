@@ -14,7 +14,7 @@
 #   aplib_pentium.bin     wcc -5 + aplib_depack_p5.asm
 #   aplib_pentium-mmx.bin wcc -5 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
 #   aplib_p2.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
-#   aplib_p3.bin          wcc -6 + aplib_depack_mmx.asm  (NEW, MMX MOVQ block copy)
+#   aplib_p3.bin          wcc -6 + aplib_depack_sse.asm  (NEW, SSE MOVUPS block copy)
 #   lzma_<tier>.bin       wcc -3..-6 -mc + xz-embedded   (NEW; 386..p3, see LZMA section)
 #
 # Each aplib_<tier>.bin dispatches at runtime on the archive's
@@ -37,17 +37,21 @@
 #   * 486 reuses aplib_depack_32.asm — `cpu 386`, runs on every 32-bit
 #     CPU. The depacker has no BSWAP / CMPXCHG / etc. opportunities;
 #     the win is again on the C side.
-#   * pentium-mmx/p2/p3 link aplib_depack_mmx.asm — an MMX-accelerated
-#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy only
-#     when the back-reference offset is >= 8 AND length is >= 8 (no
-#     overlap); short matches and overlapping matches (offset < length,
-#     the canonical run-length-on-zeros case) stay on the scalar
-#     `rep movsb` path the pentium tier uses. EMMS is emitted on exit
-#     unconditionally so a future x87 user can't see stale MMX tag
-#     words. The SSE-MOVUPS variant in aplib_depack_sse.asm is NOT
-#     linked — under DOSBox-X cputype=pentium_iii the MOVUPS block
-#     copy hangs on multi-chunk payloads; left for follow-up (see the
-#     p3 rule comment below).
+#   * pentium-mmx/p2 link aplib_depack_mmx.asm — an MMX-accelerated
+#     aPLib depacker. The MMX path uses 8-byte MOVQ block copy when
+#     the back-reference offset is >= 8 AND length is >= 8. The
+#     offset >= 8 floor matches the MOVQ stride, so each 8-byte load
+#     reads bytes the previous 8-byte store already wrote; length >
+#     offset is therefore still safe as long as offset stays at or
+#     above the chunk stride. Matches with offset < 8 (the canonical
+#     compression-of-zeros case) would have MOVQ pull bytes that
+#     hadn't been written yet, so they stay on the scalar `rep movsb`
+#     path — same path the pentium tier uses unconditionally. EMMS
+#     is emitted on exit unconditionally so a future x87 user can't
+#     see stale MMX tag words.
+#   * p3 links aplib_depack_sse.asm — an SSE-accelerated aPLib depacker
+#     with a 16-byte MOVUPS block copy path when offset >= 16 AND
+#     length >= 16, scalar `rep movsb` fallback otherwise.
 #
 # Usage:
 #   make all      # build every shipped tier
@@ -118,6 +122,9 @@ $(SRC)/aplib_depack_p5.obj: $(SRC)/aplib_depack_p5.asm
 $(SRC)/aplib_depack_mmx.obj: $(SRC)/aplib_depack_mmx.asm
 	$(NASM) -f obj -o $@ $<
 
+$(SRC)/aplib_depack_sse.obj: $(SRC)/aplib_depack_sse.asm
+	$(NASM) -f obj -o $@ $<
+
 $(SRC)/lzsa2_depack_16.obj: $(SRC)/lzsa2_depack_16.asm
 	$(NASM) -f obj -o $@ $<
 
@@ -129,12 +136,6 @@ $(SRC)/lzsa2_depack_32.obj: $(SRC)/lzsa2_depack_32.asm
 # wrapper is pure 8086 and has no tier-specific code.
 $(SRC)/exec_dos.obj: $(SRC)/exec_dos.asm
 	$(NASM) -f obj -o $@ $<
-
-# aplib_depack_sse.obj is intentionally not built today; the .asm is
-# kept on disk for follow-up investigation (see the p3-tier comment
-# below for the deferral note). Reintroduce this rule when the SSE
-# path is wired back in.
-
 # ----- 8086 tier -------------------------------------------------------
 
 # Compile in $(SRC) so wcc deposits the .obj next to the source.
@@ -285,25 +286,23 @@ $(OUTDIR)/aplib_p2.bin: $(SRC)/stub_p6.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lz
 
 # ----- p3 tier ---------------------------------------------------------
 #
-# wcc -6 codegen + MMX aplib depacker. The SSE depacker variant lives
-# in stubs/src/aplib_depack_sse.asm but is NOT linked in — under
-# DOSBox-X cputype=pentium_iii the MOVUPS-based block copy hangs on
-# multi-chunk payloads (the small-fixture gate passes, the 500 KiB
-# multi-chunk gate doesn't). NASM disassembly of the loop encoding
-# looks correct, so the symptom is most likely a DOSBox-X SSE
-# emulation gap rather than a depacker bug; left for follow-up
-# investigation. p3 still benefits from wcc -6 codegen for the
-# surrounding C housekeeping and the MMX path for long matches.
+# wcc -6 codegen + SSE aplib depacker. The SSE path copies 16 bytes per
+# MOVUPS when match offset >= 16 AND length >= 16. The offset >= 16
+# floor matches the MOVUPS stride, so each 16-byte load reads bytes
+# the previous 16-byte store already wrote; length > offset is still
+# safe as long as offset stays at or above the chunk stride. Matches
+# with offset < 16 stay on scalar `rep movsb`, which copies byte-at-
+# a-time and correctly handles the classical LZ77 run-overlap case.
 
 $(SRC)/stub_p3.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_P6) -fo=stub_p3.obj stub.c
 
-$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
+$(OUTDIR)/aplib_p3.bin: $(SRC)/stub_p3.obj $(SRC)/aplib_depack_sse.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/exec_dos.obj
 	@mkdir -p $(OUTDIR)
 	$(WLINK) option quiet system dos \
 	  name $(OUTDIR)/aplib_p3.exe \
 	  file $(SRC)/stub_p3.obj \
-	  file $(SRC)/aplib_depack_mmx.obj \
+	  file $(SRC)/aplib_depack_sse.obj \
 	  file $(SRC)/lzsa2_depack_32.obj \
 	  file $(SRC)/exec_dos.obj
 	@cp $(OUTDIR)/aplib_p3.exe $(OUTDIR)/aplib_p3.bin

@@ -56,7 +56,7 @@ doskrunch unpack out.exe -d extracted/
 | `pentium`       | U/V pipe pairing. |
 | `pentium-mmx`   | MMX-accelerated match copy in the aplib depacker. |
 | `p2`            | Pentium Pro / P6 codegen + MMX baseline. |
-| `p3`            | Same as p2 for now; SSE-accelerated copy paths are deferred (see Limitations). |
+| `p3`            | SSE-accelerated aPLib match-copy path (MOVUPS 16-byte blocks when match offset and length are both >= 16). |
 
 LZMA requires `--target 386` or higher. The CLI refuses `--algo lzma --target
 8086` (or `286`) with a clear error. Everything else works on every tier.
@@ -135,13 +135,6 @@ measurement:
   `pack` bails with a clear "cumulative archive prefix exceeds the
   65535 byte u16 run_after_offset ceiling" error rather than
   silently truncating.
-- **SSE depacker variant for p3**. `stubs/src/aplib_depack_sse.asm` ships in
-  the source tree with a `MOVUPS` 16-byte block copy, but isn't linked into
-  `aplib_p3.bin`. Under DOSBox-X 2026.05.02 with `cputype=pentium_iii` the
-  SSE path hangs on multi-chunk payloads despite a correct-looking encoding.
-  Validating on a real Pentium III box or a different emulator is the next
-  step. p3 currently uses the MMX depacker, which still wins on the
-  surrounding C housekeeping via wcc -6 codegen.
 - **MMX-vs-pentium aplib speed gate** (PLAN.md §10). aPLib's bit-at-a-time
   decoder doesn't expose enough vectorizable surface for a measurable 30%
   speedup on the literal-heavy payloads the gate cares about. Documented as

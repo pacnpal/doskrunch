@@ -2,18 +2,15 @@
 ;  for the doskrunch p3 stub (bits 16, cpu katmai). Exports the same
 ;  `aplib_depack` symbol as the 8086/386/p5/mmx ports.
 ;
-;  ===== NOT WIRED IN AS OF PHASE 5 =====
-;  stubs/Makefile builds aplib_p3.bin against aplib_depack_mmx.obj, not
-;  this file. Under DOSBox-X 2026.05.02 cputype=pentium_iii the
-;  MOVUPS-based block-copy loop hangs on multi-chunk payloads bigger
-;  than the small-fixture DOSBox-X gate. NASM disassembly of the loop
-;  encoding looks correct (67 0F 10 06 / 67 0F 11 07 for MOVUPS xmm0,
-;  [esi] / [edi], xmm0), so the symptom is most likely a DOSBox-X SSE
-;  emulation gap rather than a depacker bug. A real Pentium III box or
-;  a different emulator would prove or disprove that. Until then the
-;  asm is kept on disk for follow-up; nothing links it. The p3 blob
-;  still benefits from wcc -6 codegen for the surrounding C
-;  housekeeping and the MMX path for length-8-or-longer matches.
+;  Wired into stubs/blobs/aplib_p3.bin.
+;
+;  Real-mode SSE gotcha:
+;    Pentium III class CPUs require CR4.OSFXSR=1 before XMM instructions
+;    like MOVUPS are legal. Real DOS boots with that bit clear, so an
+;    SSE depacker that doesn't enable OSFXSR faults with #UD on real
+;    hardware/emulators that model this correctly. This port enables
+;    CR4.OSFXSR|OSXMMEXCPT and clears CR0.EM/TS before touching XMM
+;    registers.
 ;
 ;  Source lineage:
 ;    Forked from stubs/src/aplib_depack_mmx.asm. Identical bitstream
@@ -78,6 +75,16 @@ aplib_depack:
 
         push    di
         cld
+
+        ; Real-mode SSE enable. Unlike MMX, XMM instructions require
+        ; OSFXSR in CR4 and EM/TS clear in CR0.
+        mov     eax, cr0
+        and     eax, 0FFFFFFF3h          ; clear EM (bit 2) + TS (bit 3)
+        or      eax, 00000002h           ; set MP (bit 1)
+        mov     cr0, eax
+        mov     eax, cr4
+        or      eax, 00000600h           ; OSFXSR + OSXMMEXCPT
+        mov     cr4, eax
 
         movzx   esi, si
         movzx   edi, di
