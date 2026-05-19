@@ -38,10 +38,45 @@ jobs:
         run: cargo test --workspace --locked
 
   dosbox-x-integration:
+    # The DOSBox-X gates are the slowest part of CI: each test binary loops
+    # several CPU tiers, spinning up a fresh headless DOSBox-X per tier, and
+    # `cargo test` runs the binaries serially. Shard them across runners so
+    # the heavy multi-chunk gates (lzma_large ~170s, aplib_large, lzsa2_large,
+    # 2mb_memsize2) run concurrently instead of back to back. Each shard gets
+    # a dedicated runner — and therefore full CPU for the emulator — so we
+    # trade total CI minutes for wall-clock. The shards are balanced by
+    # rough cost: heavy multi-chunk gates isolated, cheap single-chunk gates
+    # grouped. `fail-fast: false` so one tier failure doesn't mask the others.
+    #
+    # The only `#[ignore]` tests are these dosbox_* binaries plus
+    # benchmark_tiers (which additionally needs DOSKRUNCH_RUN_BENCHMARK=1 and
+    # self-skips without it). Listing the dosbox binaries explicitly covers
+    # everything the old `cargo test --workspace -- --ignored` actually ran.
+    #
     # Pin the Ubuntu image: dosbox-x lives in 24.04's universe repo. If
     # ubuntu-latest moves to a release where the package name or
     # availability differs, the apt install below would break silently.
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: lzma-large
+            tests: --test dosbox_lzma_large
+          - name: large-aplib-lzsa2
+            tests: --test dosbox_aplib_large --test dosbox_lzsa2_large
+          - name: 2mb-and-maxchunk
+            tests: --test dosbox_2mb_memsize2 --test dosbox_stored_max_chunk
+          - name: all-tiers
+            tests: >-
+              --test dosbox_lzma_all_tiers --test dosbox_lzsa2_all_tiers
+              --test dosbox_stored_all_tiers --test dosbox_aplib_new_tiers
+          - name: small-gates
+            tests: >-
+              --test dosbox_8086 --test dosbox_aplib_8086
+              --test dosbox_aplib_386 --test dosbox_aplib_pentium
+              --test dosbox_run_after --test dosbox_timestamps
+    name: dosbox-x-integration (${{ matrix.shard.name }})
     steps:
       - uses: actions/checkout@v4
 
@@ -60,16 +95,18 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+          # Shared key across shards: every shard builds the same test
+          # binaries, so they reuse one cache. Concurrent writers race to
+          # populate it once; actions/cache tolerates the loser skipping.
           key: ubuntu-24.04-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ubuntu-24.04-cargo-
 
-      - name: cargo test --workspace -- --ignored
-        # The headless DOSBox-X test is `#[ignore]`-gated so contributors
-        # without `dosbox-x` installed locally can still `cargo test`.
-        # Regular tests run on the `host-tests` matrix; this job only
-        # exercises the DOS-side gate.
-        run: cargo test --workspace --locked -- --ignored
+      - name: cargo test (${{ matrix.shard.name }})
+        # `#[ignore]`-gated DOS-side gates. Regular tests run on the
+        # `host-tests` matrix; this job only exercises the dosbox gates,
+        # sharded by test binary (see the matrix above).
+        run: cargo test -p doskrunch --locked ${{ matrix.shard.tests }} -- --ignored
         env:
           SDL_VIDEODRIVER: dummy
 
