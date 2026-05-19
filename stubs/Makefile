@@ -143,6 +143,8 @@ $(SRC)/aplib_depack_mmx.obj: $(SRC)/aplib_depack_mmx.asm
 # NOT included in the production blobs. 8086 / 286 / 386 / 486 stubs must
 # not link this — those CPUs predate RDTSC and will fault with #UD.
 $(SRC)/rdtsc_helper.obj: $(SRC)/rdtsc_helper.asm
+	$(NASM) -f obj -o $@ $<
+
 $(SRC)/aplib_depack_sse.obj: $(SRC)/aplib_depack_sse.asm
 	$(NASM) -f obj -o $@ $<
 

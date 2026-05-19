@@ -68,4 +68,4 @@ DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy \
   cargo test --test benchmark_tiers -- --ignored --nocapture benchmark_mmx_speedup
 ```
 
-Expected result (DOSBox-X `cycles=fixed 10000`): pentium-mmx/pentium decode-ticks ratio in the range 1.00×–1.10× on the synthetic benchmark payload, consistent with the < 5% estimate above.
+Expected result (DOSBox-X `cycles=fixed 10000`): pentium-mmx speedup over pentium in the range 1.00×–1.05× on the synthetic benchmark payload, consistent with the 0–5% estimate above.

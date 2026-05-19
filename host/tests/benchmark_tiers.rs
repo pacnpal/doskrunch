@@ -378,6 +378,11 @@ fn benchmark_mmx_speedup() {
         let prod_len = prod_bytes.len();
         assert!(prod_len >= 8, "sfx too short");
         let trailer_start = prod_len - 8;
+        assert_eq!(
+            &prod_bytes[trailer_start..trailer_start + 4],
+            b"DKTR",
+            "production SFX trailer magic is not DKTR"
+        );
         let archive_off = u32::from_le_bytes(
             prod_bytes[trailer_start + 4..trailer_start + 8]
                 .try_into()
@@ -385,9 +390,18 @@ fn benchmark_mmx_speedup() {
         ) as usize;
 
         let bench_blob = fs::read(&blob_path).expect("read bench blob");
+        let bench_blob_len = bench_blob.len();
         // Build bench SFX = bench_blob + archive_bytes (from archive_off onwards).
+        // The copied tail still ends in the production DKTR trailer, whose
+        // archive_offset points at the *production* stub size. The stub locates
+        // the DKCH archive by reading EOF-8 and seeking to archive_offset, so we
+        // must rewrite that field to bench_blob_len — the archive now starts
+        // immediately after the (different-sized) bench blob.
         let mut bench_sfx = bench_blob;
         bench_sfx.extend_from_slice(&prod_bytes[archive_off..]);
+        let bench_len = bench_sfx.len();
+        bench_sfx[bench_len - 4..bench_len]
+            .copy_from_slice(&(bench_blob_len as u32).to_le_bytes());
 
         // Write the bench SFX.
         let bench_sfx_path = work_path.join("BENCH.EXE");
@@ -496,33 +510,30 @@ fn benchmark_mmx_speedup() {
         .map(|(_, v)| *v)
         .unwrap_or(1);
 
+    // Speedup factor: pmmx_ticks < pentium_ticks => ratio > 1 => MMX is faster.
     let ratio = pentium_ticks as f64 / pmmx_ticks.max(1) as f64;
     println!("\nMMX gate measurement (RDTSC decode-only ticks, min of {RUNS_PER_TIER} runs):");
     for (tier, ticks) in &decode_ticks {
         println!("  tier={tier:12} min_ticks={ticks}");
     }
     println!(
-        "  pentium-mmx/pentium ratio: {ratio:.3}x  ({pct:.1}% speedup)",
+        "  pentium-mmx speedup over pentium: {ratio:.3}x  ({pct:.1}% faster)",
         ratio = ratio,
         pct = (ratio - 1.0) * 100.0,
     );
-    if ratio >= 1.30 {
-        println!("  GATE MET: >= 30% speedup observed.");
-    } else {
-        println!(
-            "  GATE NOT MET: < 30% speedup observed (ratio {ratio:.3}x, {pct:.1}%).",
-            ratio = ratio,
-            pct = (ratio - 1.0) * 100.0,
-        );
-        println!(
-            "  See tests/benchmarks/results.md for the gate redefinition rationale.\n  \
-             Short summary: aPLib emits literals one byte at a time (no literal-run opcode\n  \
-             to MMX-accelerate); only match copies with offset >= 8 and length >= 8 benefit.\n  \
-             Typical aPLib payloads have a heavy short-match tail; the MMX path fires rarely."
-        );
-    }
-    // Do NOT panic on gate miss — this is a measurement harness, not a CI
-    // correctness gate. Record the result; update results.md by hand.
+    // The Phase 5 gate was redefined away from the original ">= 30%" target
+    // (see PLAN.md §10 and tests/benchmarks/results.md): aPLib emits literals
+    // one byte at a time (no literal-run opcode to MMX-accelerate), and only
+    // match copies with offset >= 8 AND length >= 8 hit the MOVQ path, so a
+    // typical mixed payload sees single-digit-percent gains. This harness
+    // reports the measured ratio rather than passing/failing a fixed threshold.
+    println!(
+        "  Gate redefined (no fixed threshold): only long matches with offset >= 8\n  \
+         benefit; expected 0–5% on typical payloads. See tests/benchmarks/results.md\n  \
+         for the full rationale."
+    );
+    // Do NOT panic — this is a measurement harness, not a CI correctness gate.
+    // Record the measured ratio; update results.md by hand.
 }
 
 fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
@@ -636,8 +647,8 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
          `stubs/`) wrap `aplib_depack` calls with `rdtsc_lo()` reads and print \
          `DKBENCH:decode_ticks=N` to stdout. Run `benchmark_mmx_speedup` (also in this file) \
          after building the bench blobs to get isolated decode tick counts with \
-         `cycles=fixed 10000`. Expected result: ratio pentium-mmx/pentium in the range 1.00x–1.10x \
-         on the synthetic benchmark payload (consistent with the 2–5% estimate above).\n",
+         `cycles=fixed 10000`. Expected result: pentium-mmx speedup over pentium in the range \
+         1.00x–1.05x on the synthetic benchmark payload (consistent with the 0–5% estimate above).\n",
     );
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
