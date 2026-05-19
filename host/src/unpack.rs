@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::archive::{read_trailer, Algorithm, Archive, FileEntry, TRAILER_SIZE};
+use crate::archive::{
+    read_trailer, Algorithm, Archive, FileEntry, LZMA_DICT_SIZE, TRAILER_SIZE,
+};
 
 pub struct UnpackOptions {
     pub input: PathBuf,
@@ -146,9 +148,8 @@ pub fn load_archive(path: &Path) -> Result<Archive> {
 
 fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
     match algo {
-        Algorithm::Stored | Algorithm::Aplib => {}
+        Algorithm::Stored | Algorithm::Aplib | Algorithm::Lzma => {}
         Algorithm::Lzsa2 => bail!("lzsa2 host-decode lands in phase 6"),
-        Algorithm::Lzma => bail!("lzma host-decode lands in phase 5"),
     }
     // Host-side cap on per-file uncompressed size. The unpack path
     // builds the whole file in memory before writing it out (the
@@ -196,6 +197,25 @@ fn write_entry(out: &Path, entry: &FileEntry, algo: Algorithm) -> Result<()> {
                 let decoded =
                     crate::compress::aplib::decompress(&c.data, c.uncompressed_size as usize)
                         .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
+                data.extend_from_slice(&decoded);
+            }
+            Algorithm::Lzma => {
+                if c.uncompressed_size == 0 {
+                    if !c.data.is_empty() {
+                        bail!(
+                            "{}: lzma chunk declares 0 uncompressed bytes but carries {} compressed",
+                            entry.display_name(),
+                            c.data.len()
+                        );
+                    }
+                    continue;
+                }
+                let decoded = crate::compress::lzma::decompress(
+                    &c.data,
+                    c.uncompressed_size as usize,
+                    LZMA_DICT_SIZE,
+                )
+                .map_err(|e| anyhow::anyhow!("{}: {}", entry.display_name(), e))?;
                 data.extend_from_slice(&decoded);
             }
             _ => unreachable!("rejected above"),

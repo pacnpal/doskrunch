@@ -547,6 +547,33 @@ pub fn read_trailer(tail: &[u8]) -> Result<u32, ArchiveError> {
 /// and the actual bytes processed per chunk on disk.
 pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
 
+/// Maximum uncompressed bytes per LZMA chunk. Picked to match
+/// `APLIB_CHUNK_INPUT` so a payload packed at the same `--chunk-size`
+/// produces the same number of chunks regardless of algorithm. The
+/// LZMA stub's `g_lzma_buf` output scratch is sized to match.
+pub const LZMA_CHUNK_INPUT: usize = 16 * 1024;
+
+/// Producer-side ceiling on a single LZMA chunk's compressed size. LZMA's
+/// worst-case expansion on incompressible data is roughly `n + n/200 +
+/// 16`, so a 16 KiB chunk caps at ~16.5 KiB. Plus the 1-byte MicroLZMA
+/// props prefix. The 17 KiB ceiling here leaves slack for any edge case
+/// the lzma-rust encoder might emit; the on-disk per-chunk u16 size
+/// field accepts up to 65535 so this isn't a wire-format constraint.
+/// The stub's `g_lzma_src` scratch is sized exactly to this value.
+pub const LZMA_MAX_COMPRESSED_CHUNK: usize = 17 * 1024;
+
+/// LZMA dictionary size used at both encode and decode time. The
+/// MicroLZMA stream doesn't carry the dict size in-band, so the
+/// producer and consumer have to agree on it out of band; we hard-code
+/// 16 KiB so the stub's DOS-heap allocation budget is predictable and
+/// the encoder doesn't waste cycles building a window the decoder
+/// can't use. 16 KiB is at the small end of useful LZMA dictionaries
+/// (compression starts to suffer below ~8 KiB) but the trade-off is
+/// straightforward: a bigger dict costs DOS conventional RAM at run
+/// time on every machine we ship to. Bumping to 32 / 64 KiB is a
+/// future change once the DOS-heap allocator is measured in the wild.
+pub const LZMA_DICT_SIZE: u32 = 16 * 1024;
+
 /// Producer-side ceiling on a single aPLib chunk's compressed size. The
 /// 16-bit stub's `g_src` scratch buffer (`APLIB_SRC_SIZE` in
 /// `stubs/src/stub.c`) is sized exactly to this value, so a chunk that
@@ -679,6 +706,69 @@ pub fn build_stored_entry(
     })
 }
 
+/// Build an LZMA-compressed file entry. Each chunk's uncompressed
+/// payload is at most `chunk_size` bytes (bounded by `LZMA_CHUNK_INPUT`
+/// at the caller). The compressed stream is xz-embedded's MicroLZMA
+/// format: one props byte plus raw LZMA1 range-coded data, no EOS.
+///
+/// LZMA dict size is fixed at `LZMA_DICT_SIZE`; the encoder and the
+/// stub-side decoder both have to agree on it out of band.
+pub fn build_lzma_entry(
+    name_8_3: &str,
+    attrs: u8,
+    timestamp: u32,
+    data: &[u8],
+    chunk_size: usize,
+) -> Result<FileEntry, ArchiveError> {
+    if !(1..=LZMA_CHUNK_INPUT).contains(&chunk_size) {
+        return Err(ArchiveError::InvalidChunkSize {
+            algorithm: "lzma",
+            given: chunk_size,
+            max: LZMA_CHUNK_INPUT,
+        });
+    }
+    let projected = data.len().div_ceil(chunk_size.max(1));
+    if projected > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(projected));
+    }
+    let crc = crc32fast::hash(data);
+    let mut name = name_8_3.as_bytes().to_vec();
+    name.push(0);
+    let chunks: Vec<Chunk> = if data.is_empty() {
+        vec![Chunk {
+            uncompressed_size: 0,
+            data: Vec::new(),
+        }]
+    } else {
+        let mut out = Vec::with_capacity(data.len().div_ceil(chunk_size));
+        for c in data.chunks(chunk_size) {
+            let compressed = crate::compress::lzma::compress(c, LZMA_DICT_SIZE)
+                .map_err(ArchiveError::LzmaCompress)?;
+            if compressed.len() > LZMA_MAX_COMPRESSED_CHUNK {
+                return Err(ArchiveError::LzmaChunkOverflow {
+                    uncompressed: c.len(),
+                    compressed: compressed.len(),
+                });
+            }
+            out.push(Chunk {
+                uncompressed_size: c.len() as u16,
+                data: compressed,
+            });
+        }
+        out
+    };
+    if chunks.len() > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(chunks.len()));
+    }
+    Ok(FileEntry {
+        name,
+        attrs,
+        timestamp,
+        chunks,
+        crc32: crc,
+    })
+}
+
 #[derive(Debug)]
 pub enum ArchiveError {
     Io(io::Error),
@@ -710,6 +800,11 @@ pub enum ArchiveError {
         compressed: usize,
     },
     AplibCompress(String),
+    LzmaChunkOverflow {
+        uncompressed: usize,
+        compressed: usize,
+    },
+    LzmaCompress(String),
     InvalidChunkSize {
         algorithm: &'static str,
         given: usize,
@@ -751,9 +846,19 @@ impl std::fmt::Display for ArchiveError {
                 compressed,
             } => write!(
                 f,
-                "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, overflowing the u16 per-chunk size field"
+                "aplib chunk: {uncompressed} bytes compressed to {compressed} bytes, exceeding the {} byte stub g_src ceiling",
+                APLIB_MAX_COMPRESSED_CHUNK,
             ),
             Self::AplibCompress(msg) => write!(f, "{msg}"),
+            Self::LzmaChunkOverflow {
+                uncompressed,
+                compressed,
+            } => write!(
+                f,
+                "lzma chunk: {uncompressed} bytes compressed to {compressed} bytes, exceeding the {} byte stub g_lzma_src ceiling",
+                LZMA_MAX_COMPRESSED_CHUNK,
+            ),
+            Self::LzmaCompress(msg) => write!(f, "{msg}"),
             Self::InvalidChunkSize {
                 algorithm,
                 given,
@@ -880,6 +985,61 @@ mod tests {
             .sum();
         assert_eq!(total as usize, data.len());
         aplib_roundtrip(vec![entry]);
+    }
+
+    fn lzma_roundtrip(files: Vec<FileEntry>) {
+        let mut a = Archive::new(Algorithm::Lzma, TargetTier::I386);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = files;
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let parsed = Archive::read(&mut r).unwrap();
+        assert_eq!(a, parsed);
+    }
+
+    #[test]
+    fn lzma_single_file_roundtrips() {
+        let data = b"hello lzma world, hello lzma world, hello lzma world.".repeat(8);
+        let entry = build_lzma_entry("HELLO.TXT", 0x20, 0, &data, LZMA_CHUNK_INPUT).unwrap();
+        let csz: usize = entry.chunks.iter().map(|c| c.data.len()).sum();
+        assert!(
+            csz < data.len(),
+            "expected compression: csz={csz} usz={}",
+            data.len()
+        );
+        assert_eq!(entry.uncompressed_size() as usize, data.len());
+        lzma_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzma_empty_file_roundtrips() {
+        let entry = build_lzma_entry("EMPTY.BIN", 0x20, 0, b"", LZMA_CHUNK_INPUT).unwrap();
+        assert_eq!(entry.uncompressed_size(), 0);
+        lzma_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzma_multi_chunk_file_roundtrips() {
+        let data: Vec<u8> = (0..(LZMA_CHUNK_INPUT + 1024))
+            .map(|i| (i & 0xff) as u8)
+            .collect();
+        let entry = build_lzma_entry("BIG.BIN", 0x20, 0, &data, LZMA_CHUNK_INPUT).unwrap();
+        assert!(entry.chunks.len() >= 2, "should split into multiple chunks");
+        let total: u32 = entry
+            .chunks
+            .iter()
+            .map(|c| c.uncompressed_size as u32)
+            .sum();
+        assert_eq!(total as usize, data.len());
+        lzma_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzma_rejects_chunk_size_above_ceiling() {
+        let data = vec![0u8; 32];
+        let err = build_lzma_entry("X.BIN", 0x20, 0, &data, LZMA_CHUNK_INPUT + 1).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidChunkSize { .. }), "got {err:?}");
     }
 
     #[test]

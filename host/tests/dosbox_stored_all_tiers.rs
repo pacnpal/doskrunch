@@ -1,4 +1,5 @@
-//! Phase 3 stored-path correctness gate across every shipped tier.
+//! Stored-path correctness gate across every shipped tier (Phase 3
+//! initially, Phase 5 grew to all eight tiers).
 //!
 //! `host/src/stubs.rs` routes both `Algorithm::Stored` and
 //! `Algorithm::Aplib` to the same per-tier blob, and the stub's main
@@ -16,11 +17,12 @@
 //! aplib branch.
 //!
 //! This file fills the gap: explicit `--algo stored` packs for each of
-//! the three shipped tiers, run under headless DOSBox-X at the matching
+//! the eight shipped tiers (8086 / 286 / 386 / 486 / pentium /
+//! pentium-mmx / p2 / p3), run under headless DOSBox-X at the matching
 //! `cputype=`, asserting byte-identical extraction. Catches a class of
-//! bug Phase 3 would otherwise miss — Watcom's `-3` / `-5` codegen for
-//! the C housekeeping in the stored branch hasn't been runtime-verified
-//! on the new tiers.
+//! bug the per-algo gates would otherwise miss — Watcom's `-2` / `-4` /
+//! `-6` codegen for the C housekeeping in the stored branch hasn't been
+//! runtime-verified before Phase 5.
 //!
 //! `#[ignore]`-gated so contributors without `dosbox-x` aren't blocked;
 //! runs in CI's `dosbox-x-integration` job via `cargo test -- --ignored`.
@@ -48,7 +50,27 @@ fn extracts_stored_fixtures_across_all_shipped_tiers() {
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
 
-    for (tier, cputype) in &[("8086", "8086"), ("386", "386"), ("pentium", "pentium")] {
+    // (--target value, DOSBox-X cputype value) per shipped tier. The
+    // two strings differ because DOSBox-X spells some cputypes
+    // differently than our `--target` flag (`pentium_mmx` with an
+    // underscore not a hyphen, `pentium_ii`/`pentium_iii` instead of
+    // `p2`/`p3`). Validated against `dosbox-x 2026.05.02` — DOSBox-X
+    // does NOT accept `pentium_pro` (rejected as invalid); the matching
+    // P6-family cputype is `ppro_slow` for in-order or `pentium_ii` /
+    // `pentium_iii` for the production variants. We pin p2 to
+    // `pentium_ii` so the host's `--target p2` flag matches DOSBox-X's
+    // "Pentium II" spelling.
+    let tiers: &[(&str, &str)] = &[
+        ("8086", "8086"),
+        ("286", "286"),
+        ("386", "386"),
+        ("486", "486"),
+        ("pentium", "pentium"),
+        ("pentium-mmx", "pentium_mmx"),
+        ("p2", "pentium_ii"),
+        ("p3", "pentium_iii"),
+    ];
+    for (tier, cputype) in tiers {
         let work = tempfile::tempdir().expect("create tempdir");
         let work_path = work.path();
 

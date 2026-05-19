@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use doskrunch::archive::APLIB_CHUNK_INPUT;
+use doskrunch::archive::{APLIB_CHUNK_INPUT, LZMA_CHUNK_INPUT};
 use doskrunch::{archive, inspect, pack, unpack};
 
 #[derive(Parser)]
@@ -131,17 +131,19 @@ fn main() -> Result<()> {
             preserve_timestamps,
             chunk_size,
         } => {
-            // Validate `--chunk-size` only for shipped algorithms so
-            // `--algo lzma --chunk-size 99999` surfaces the more
-            // useful "lzma lands in phase 5" error from pack() rather
-            // than a chunk-size error against a placeholder ceiling.
-            // The shipped-algo check inside pack() runs first and
-            // returns the deferred-algorithm bail; chunk-size errors
-            // are only reachable for `stored` and `aplib`.
+            // Validate `--chunk-size` only for shipped algorithms.
+            // `aplib`, `stored`, and `lzma` are all shipped now
+            // (Phase 5 wired LZMA), so each has its own ceiling. The
+            // remaining deferred algorithm is `lzsa2`; for that we
+            // return None so the chunk-size check is skipped and the
+            // deferred-algorithm bail inside pack() runs first,
+            // producing a more useful error than a chunk-size
+            // complaint against a placeholder ceiling would.
             let max_chunk: Option<usize> = match algo {
                 AlgoArg::Aplib => Some(APLIB_CHUNK_INPUT),
                 AlgoArg::Stored => Some(u16::MAX as usize),
-                AlgoArg::Lzsa2 | AlgoArg::Lzma => None,
+                AlgoArg::Lzma => Some(LZMA_CHUNK_INPUT),
+                AlgoArg::Lzsa2 => None,
             };
             if let Some(max) = max_chunk {
                 if !(1..=max).contains(&chunk_size) {
@@ -166,20 +168,20 @@ fn main() -> Result<()> {
         Cmd::Inspect { input } => inspect::inspect(inspect::InspectOptions { input }),
         Cmd::ListTargets => {
             println!("8086         shipped (default)");
-            println!("286          planned (phase 5)");
+            println!("286          shipped");
             println!("386          shipped (perf gate pending; see tests/benchmarks/results.md)");
-            println!("486          planned (phase 5)");
+            println!("486          shipped");
             println!("pentium      shipped (perf gate pending; see tests/benchmarks/results.md)");
-            println!("pentium-mmx  planned (phase 5)");
-            println!("p2           planned (phase 5)");
-            println!("p3           planned (phase 5)");
+            println!("pentium-mmx  shipped (MMX 8-byte block copy in depacker)");
+            println!("p2           shipped (P6 codegen + MMX depacker)");
+            println!("p3           shipped (P6 codegen + MMX depacker; SSE depacker variant deferred)");
             Ok(())
         }
         Cmd::ListAlgos => {
             println!("aplib        shipped (default; via vendored apultra)");
             println!("stored       shipped (fallback / no-op baseline)");
+            println!("lzma         shipped (best ratio; --target 386+ only)");
             println!("lzsa2        planned (phase 6; fast decompression)");
-            println!("lzma         planned (phase 5; best ratio, 386+ only)");
             Ok(())
         }
     }

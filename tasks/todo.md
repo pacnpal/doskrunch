@@ -283,6 +283,166 @@ verify-gate tests PLAN.md §10 specifies.
 
 ## Phase 5: LZMA + remaining tiers
 
-Not started.
+Phase 5 ships in five logical pieces on `claude/doskrunch-phase-5`,
+landing together as one PR. The aplib side fills out the five
+remaining CPU tiers (286, 486, pentium-mmx, p2, p3); the LZMA side
+vendors xz-embedded, wires it both host-side and stub-side, and
+ships per-tier LZMA blobs at 386 through p3.
+
+- [x] aplib_286.bin (wcc -2 + aplib_depack_16.asm), aplib_486.bin
+      (wcc -4 + aplib_depack_32.asm), aplib_pentium-mmx.bin,
+      aplib_p2.bin, aplib_p3.bin (all wcc -5/-6 + the existing p5
+      depacker initially). Five new per-tier blobs reusing the
+      existing depackers.
+- [x] aplib_depack_mmx.asm — MMX 8-byte MOVQ block copy on the match
+      hot path when offset >= 8 and length >= 8; scalar `rep movsb`
+      fallback for shorter or overlapping matches; EMMS on exit. Wired
+      into pentium-mmx, p2, p3. Blob size grew 6464 -> 6512 bytes.
+- [x] aplib_depack_sse.asm — MOVUPS 16-byte block-copy variant; on
+      disk but NOT linked in. Under DOSBox-X cputype=pentium_iii the
+      MOVUPS-based copy hangs on multi-chunk payloads despite
+      correct-looking NASM encoding. Documented as deferred in
+      stubs/blobs/README.md and stubs/Makefile; p3 falls back to
+      the MMX depacker. Follow-up needs a real Pentium III box or
+      a different emulator to prove the suspicion that this is a
+      DOSBox-X SSE emulation gap rather than a depacker bug.
+- [x] Vendor xz-embedded ae63ae3 under `vendor/xz-embedded/` via
+      `git subtree add --squash`. License 0BSD (public-domain
+      equivalent, MIT-compatible). README + CLAUDE.md document the
+      pinned SHA.
+- [x] host/build.rs compiles xz-embedded's MicroLZMA decoder
+      (xz_crc32.c + xz_dec_lzma2.c with -DXZ_DEC_MICROLZMA) into a
+      separate `xz_embedded` static lib. xz_dec_stream.c (the .xz
+      container parser) intentionally NOT included — MicroLZMA's
+      one-byte-per-chunk framing is enough for the doskrunch archive,
+      and the .xz container would add ~40 bytes per chunk for
+      already-redundant length/CRC fields.
+- [x] host/src/compress/lzma.rs — encoder via lzma-rust 0.1
+      (Apache-2.0). LZMAWriter::new(out, opts, use_header=false,
+      use_end_marker=false, ...) produces a raw LZMA1 stream; we
+      replace its first byte (always 0x00 from range coder init)
+      with the bitwise-negated MicroLZMA properties byte and ship
+      that. Decoder via the vendored xz-embedded FFI. Eight unit
+      tests cover empty / short / multi-chunk round-trips, size-
+      mismatch detection, deterministic encoding, and the PLAN.md
+      §10 "LZMA beats aPLib > 100 KB" gate (200 KiB LCG-derived
+      mixed-content payload). LZMA_DICT_SIZE pinned at 16 KiB; the
+      stream doesn't carry the dict size in-band so the producer
+      and consumer agree out of band.
+- [x] archive::build_lzma_entry parallel to build_aplib_entry /
+      build_stored_entry. LZMA_CHUNK_INPUT = 16 KiB (matches aPLib
+      so the chunk count is algorithm-independent at the same
+      --chunk-size). LZMA_MAX_COMPRESSED_CHUNK = 17 KiB (LZMA's
+      worst-case expansion plus the 1-byte MicroLZMA prefix).
+      Roundtrip tests in archive::tests.
+- [x] pack.rs: Algorithm::Lzma flows into build_lzma_entry on
+      target 386+; bails at pack() entry with a clear error on
+      target 8086/286.
+- [x] unpack.rs: Algorithm::Lzma decodes via
+      compress::lzma::decompress (the same xz-embedded FFI the
+      stub uses). Host-side roundtrip working at all 6 LZMA tiers.
+- [x] main.rs / list-algos: LZMA flipped from "planned (phase 5)"
+      to "shipped". CLI --chunk-size validation has an LZMA arm.
+- [x] roundtrip::lzma_rejected_on_8086_and_286_at_the_cli_layer
+      confirms the CLI surfaces the "requires --target 386+"
+      message on both rejected tiers.
+- [x] stubs/src/stub_lzma.c — LZMA-only stub.c (algo == 3 only;
+      anything else dies loudly). XZ_SINGLE mode so the output
+      buffer IS the LZMA2 dictionary (no separate dict allocation).
+      Compact memory model (-mc) so xz-embedded's `uint8_t *`
+      becomes `uint8_t __far *` and the ~32 KiB decoder state can
+      live in its own data segment — small model's malloc caps a
+      single allocation at 32 KiB and `struct xz_dec_microlzma` is
+      bigger than that, so the obvious -ms approach hits a wall.
+- [x] Two xz-embedded portability patches for 16-bit C, both
+      `/* doskrunch patch: */`-marked in the vendored source:
+      RC_TOP_VALUE = `(1 << 24)` → `((uint32_t)1 << 24)` and the
+      two `> (3U << 30)` bounds checks → `> ((uint32_t)3 << 30)`.
+      In 16-bit Watcom, `1` and `3U` are 16-bit `int` / `unsigned
+      int`, so a 24- or 30-bit shift is undefined behavior; Watcom
+      truncates to 0 which made rc_normalize never refill and
+      xz_dec_microlzma_alloc reject every nonzero dict_size. Both
+      are upstream-able portability fixes.
+- [x] stubs/Makefile: six per-tier LZMA build rules
+      (lzma_{386,486,pentium,pentium-mmx,p2,p3}.bin), compiled
+      under wcc -mc with `-DXZ_DEC_MICROLZMA` and the
+      vendor/xz-embedded include paths. Each blob lands at 16,840
+      bytes (target ≤18,432 / hard ceiling 24,576 for 386..p2;
+      ≤20,480 / 28,672 for p3).
+- [x] .github/workflows/build-stubs.yml mounts the project ROOT
+      (not just stubs/) so the Makefile can reach
+      `../vendor/xz-embedded/` from /work/stubs. The paths-trigger
+      now includes `vendor/xz-embedded/**` so an xz subtree update
+      forces a stub rebuild.
+- [x] host/src/stubs.rs: dispatch table grew six LZMA entries.
+- [x] host/tests/dosbox_lzma_all_tiers.rs — fixture-set extraction
+      at every LZMA tier under headless DOSBox-X (~10 s locally).
+- [x] host/tests/dosbox_lzma_large.rs — 500 KiB multi-chunk payload
+      at every LZMA tier (~170 s locally). Catches the
+      second-chunk-corruption class of bug the single-chunk gate
+      misses.
+- [x] dosbox_aplib_large.rs and dosbox_stored_all_tiers.rs grown
+      from 3 tiers to all 8.
+
+**Phase 5 verify**
+
+- [x] `cargo test --workspace` green: 73 unit + 3 aplib_roundtrip
+      + 12 roundtrip integration tests (was 50+/3/10 in Phase 4;
+      the +23 unit tests are LZMA codec coverage + archive LZMA
+      builder + roundtrip CLI LZMA rejection).
+- [x] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
+      green across all 14 ignored DOSBox-X gates locally under
+      dosbox-x 2026.05.02 (was 11 in Phase 4): the 11 existing
+      gates plus dosbox_aplib_new_tiers, dosbox_lzma_all_tiers,
+      and dosbox_lzma_large. benchmark_tiers is also `#[ignore]`-d
+      but additionally requires `DOSKRUNCH_RUN_BENCHMARK=1`, so
+      it fast-skips under the plain `--ignored` invocation and
+      isn't counted here. The 8-tier dosbox_stored_all_tiers and
+      8-tier dosbox_aplib_large gates each test 8 tier-runs, so
+      total tier-runs covered is roughly 30 across the suite.
+- [x] Stub blob count: 8 aplib + 6 LZMA = 14 blobs (was 3 after
+      Phase 3, 3 after Phase 4). All within hard ceilings.
+- [x] PLAN.md §10 "LZMA beats aPLib > 100 KB" gate met by the
+      host unit test on a 200 KiB realistic payload.
+- [x] PLAN.md §4 "LZMA requires 386+" enforced at three layers:
+      CLI (chunk-size validation), pack() (algorithm gate), and
+      stub_for() (no LZMA blob for 8086 / 286 targets).
+
+**Not done in Phase 5 (deferred deliberately)**
+
+- SSE depacker variant for p3. aplib_depack_sse.asm exists in
+  stubs/src/ with a 16-byte MOVUPS block-copy path; the Makefile
+  doesn't link it. Under DOSBox-X 2026.05.02 cputype=pentium_iii
+  the SSE path hangs on multi-chunk payloads despite a correct-
+  looking NASM encoding. Validating on a real Pentium III box or
+  a different emulator is the next step. p3 uses the MMX depacker
+  instead, which is also a wcc -6 win on the surrounding C
+  housekeeping.
+- MMX speed gate from PLAN.md §10 ("pentium-mmx aplib at least
+  30% faster than pentium aplib on a literal-heavy payload"). The
+  MMX depacker is wired up and correct, but a measurable 30%
+  speedup is unlikely to materialize: aPLib literals are emitted
+  one byte at a time gated on a bit-decode (no literal-run opcode
+  the MMX path could accelerate), so the vectorizable surface is
+  the rarer "long match with offset >= 8" case. Same Karpathy
+  "push back on speculative work" framing the Phase 3 perf-gate
+  row uses; left open as a measurement question rather than a
+  code-quality question.
+- LZMA-vs-aPLib decompression-time gate from PLAN.md §10 ("LZMA
+  decompression on 386 tier completes within 10x the aPLib
+  decompression time on the same payload"). Same noisy-substrate
+  concern as the Phase 3 perf gate; the multi-chunk LZMA gate
+  finishes in ~170 s (aPLib finishes in ~50 s) across 6 tiers,
+  so the per-tier ratio is in the right ballpark, but cleanly
+  isolating LZMA decode time from DOS startup + INT 21h overhead
+  needs stub-side INT 1Ah cycle-counter instrumentation that the
+  Phase 3 row defers.
+- Phase 3 perf-gate row (386 / pentium aplib speedup): still open
+  across phases. Not bundled here for the same reason it wasn't
+  in Phase 4.
+- Default --chunk-size bump to 32 KiB. Same memory-model concern
+  Phase 4 documented; LZMA tightens it further because the LZMA
+  stub already uses compact model and the chunk size also bounds
+  the dict.
 
 ## Phase 6: LZSA2 + polish + release
