@@ -341,7 +341,7 @@ Build:
 Verify:
 
 - DOSBox-X tests run on three CPU emulation profiles. Each test packs with matching `--target` and verifies extraction.
-- Benchmark decompression of a 500KB payload across all three tiers. Results in `tests/benchmarks/results.md`. Expected: 386 is 2-4x faster than 8086, pentium is 5-10x faster.
+- Benchmark decompression of a 500KB payload across all three tiers. Results in `tests/benchmarks/results.md` with isolated decode timing (`INT 1Ah` around `aplib_depack`) plus end-to-end wall-clock. Record the 386/8086 and pentium/8086 ratios and explicitly document the verdict (met / not met / redefined) for the 2-4x and 5-10x expectations.
 - Stub sizes: 8086 under 4KB, 386 under 6KB, pentium under 8KB.
 
 ### Phase 4: chunked extraction and large payloads

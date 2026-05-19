@@ -1,16 +1,17 @@
-//! Phase 3 §10 timing harness: measure end-to-end SFX wall-clock for a
-//! 500 KiB synthetic mixed-content payload at each shipped tier under
-//! headless DOSBox-X and regenerate `tests/benchmarks/results.md`.
+//! Phase 3 §10 timing harness: measure per-tier aPLib decode time for a
+//! 500 KiB synthetic mixed-content payload under headless DOSBox-X and
+//! regenerate `tests/benchmarks/results.md`.
 //!
 //! NOT a correctness gate — this file is purely a measurement tool. The
 //! large-payload multi-chunk correctness gate lives in
 //! `host/tests/dosbox_aplib_large.rs` (runs in CI under `--ignored`,
 //! asserts byte-identical extraction at every tier). PLAN.md §10's
-//! 2–4× / 5–10× speedup ratios are tracked separately in
-//! `tests/benchmarks/results.md` and `tasks/todo.md` — see the perf-gate
-//! row in todo.md for the current "not met, awaiting user direction"
-//! state. The harness here reports raw wall-clock; it does not assert
-//! on the ratio so a measurement-substrate miss can't block the PR.
+//! 2–4× / 5–10× speedup ratios are reported in
+//! `tests/benchmarks/results.md` and summarized in `tasks/todo.md`.
+//! The harness here reports both:
+//!   * isolated decode time (`INT 1Ah` BIOS ticks around `aplib_depack`,
+//!     emitted by the stub into `DKPERF.BIN` as little-endian `u32`), and
+//!   * end-to-end SFX wall-clock.
 //!
 //! Double-gated: `#[ignore]` AND `DOSKRUNCH_RUN_BENCHMARK=1`. CI's
 //! `dosbox-x-integration` job runs `cargo test --workspace -- --ignored`
@@ -111,6 +112,8 @@ struct TierResult {
     tier: &'static str,
     cputype: &'static str,
     sfx_size: u64,
+    decode_ticks_min: u32,
+    decode_ticks_runs: Vec<u32>,
     wall_clock_min_ms: u128,
     runs: Vec<u128>,
 }
@@ -160,6 +163,7 @@ fn benchmark_tier_decompression() {
         // dosbox-x needs the SFX named on an 8.3 path inside the mount.
         // We rename per-run so each tier's run-dir is independent.
         let mut runs_ms: Vec<u128> = Vec::with_capacity(RUNS_PER_TIER);
+        let mut decode_ticks_runs: Vec<u32> = Vec::with_capacity(RUNS_PER_TIER);
         for run in 0..RUNS_PER_TIER {
             let rundir = tempfile::tempdir().expect("rundir");
             let rundir_path = rundir.path();
@@ -215,6 +219,8 @@ fn benchmark_tier_decompression() {
             );
             let elapsed = started.elapsed().as_millis();
             runs_ms.push(elapsed);
+            let decode_ticks = read_aplib_ticks_file(rundir_path, tier, run);
+            decode_ticks_runs.push(decode_ticks);
 
             // Sanity check: the extracted payload must match the input
             // exactly. We verify on every run so a flaky depacker can't
@@ -226,11 +232,14 @@ fn benchmark_tier_decompression() {
             assert_eq!(body.len(), payload.len(), "size mismatch tier {tier}");
             assert!(body == payload, "byte mismatch tier {tier}");
         }
+        let decode_ticks_min = *decode_ticks_runs.iter().min().unwrap();
         let wall_clock_min_ms = *runs_ms.iter().min().unwrap();
         results.push(TierResult {
             tier,
             cputype,
             sfx_size,
+            decode_ticks_min,
+            decode_ticks_runs,
             wall_clock_min_ms,
             runs: runs_ms,
         });
@@ -242,23 +251,25 @@ fn benchmark_tier_decompression() {
     // not a gate — the byte-identical correctness check lives in
     // dosbox_aplib_large.rs (and runs in CI under --ignored without
     // requiring the env var). The PLAN.md §10 2–4× / 5–10× speedup
-    // expectation is tracked in tasks/todo.md as an unmet perf gate;
-    // this harness doesn't assert it because end-to-end SFX wall-clock
-    // under DOSBox-X cycles=auto isn't a reliable signal for relative
-    // depacker performance (per-cputype emulation cost variance + DOS
-    // startup + INT 21h I/O are all in the path). An assertion here
-    // would either spuriously fail on measurement noise or pass on a
-    // genuinely slow port, neither of which is useful. Closing the
-    // perf gate needs isolated depacker timing (stub-side INT 1Ah
-    // cycle counter) or real-iron data; see tasks/todo.md.
-    let baseline = results[0].wall_clock_min_ms.max(1);
+    // expectation is reported in results.md but this harness still
+    // doesn't assert on the ratio. The numbers are empirical data, not
+    // a deterministic correctness condition.
+    let baseline_ticks = results
+        .iter()
+        .find(|r| r.tier == "8086")
+        .map(|r| r.decode_ticks_min.max(1))
+        .unwrap_or(1);
+    let baseline_wall = results[0].wall_clock_min_ms.max(1);
     for r in &results {
-        let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
+        let decode_ratio = baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64;
+        let wall_ratio = baseline_wall as f64 / r.wall_clock_min_ms.max(1) as f64;
         println!(
-            "tier={tier:8} wall={ms:6} ms  ratio_vs_8086={ratio:.2}x",
+            "tier={tier:8} decode={ticks:6} ticks ({decode_ratio:.2}x)  wall={ms:6} ms ({wall_ratio:.2}x)",
             tier = r.tier,
+            ticks = r.decode_ticks_min,
+            decode_ratio = decode_ratio,
             ms = r.wall_clock_min_ms,
-            ratio = ratio,
+            wall_ratio = wall_ratio,
         );
     }
 }
@@ -267,11 +278,30 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     let dest = root.join("tests").join("benchmarks").join("results.md");
     fs::create_dir_all(dest.parent().unwrap()).expect("mkdir benchmarks");
 
-    let baseline = results
+    let baseline_ticks = results
+        .iter()
+        .find(|r| r.tier == "8086")
+        .map(|r| r.decode_ticks_min.max(1))
+        .unwrap_or(1);
+    let baseline_wall = results
         .iter()
         .find(|r| r.tier == "8086")
         .map(|r| r.wall_clock_min_ms.max(1))
         .unwrap_or(1);
+    let ratio_386 = results
+        .iter()
+        .find(|r| r.tier == "386")
+        .map(|r| baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64);
+    let ratio_pentium = results
+        .iter()
+        .find(|r| r.tier == "pentium")
+        .map(|r| baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64);
+    let gate_met = ratio_386
+        .map(|v| (2.0..=4.0).contains(&v))
+        .unwrap_or(false)
+        && ratio_pentium
+            .map(|v| (5.0..=10.0).contains(&v))
+            .unwrap_or(false);
 
     let mut md = String::new();
     md.push_str("# Tier decompression benchmark\n\n");
@@ -281,61 +311,75 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
         payload.len() / 1024,
         payload.len(),
     ));
-    md.push_str(
-        "Measurement: end-to-end SFX wall-clock under headless DOSBox-X with `cycles=auto`, \
-        min across 3 runs per tier. The benchmark is `#[ignore]`-gated AND env-var-gated \
-        (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this \
-        file. Run locally with:\n\n",
-    );
+    md.push_str("Measurement setup:\n\n");
+    md.push_str("* Isolated decode time: the stub wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks) in benchmark runs. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
+    md.push_str("* End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs.\n");
+    md.push_str("* Benchmark gating: `#[ignore]` AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file.\n\n");
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
-    md.push_str("| Tier | cputype | SFX size (bytes) | Wall clock min (ms) | Ratio vs 8086 |\n");
-    md.push_str("|------|---------|------------------|----------------------|----------------|\n");
+    md.push_str("## Isolated aPLib decode time (INT 1Ah ticks)\n\n");
+    md.push_str("| Tier | cputype | SFX size (bytes) | Decode min (ticks) | Decode ratio vs 8086 |\n");
+    md.push_str("|------|---------|------------------|---------------------|----------------------|\n");
     for r in results {
-        let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
+        let ratio = baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64;
         md.push_str(&format!(
-            "| {tier} | {cputype} | {sfx} | {ms} | {ratio:.2}× |\n",
+            "| {tier} | {cputype} | {sfx} | {ticks} | {ratio:.2}× |\n",
             tier = r.tier,
             cputype = r.cputype,
             sfx = r.sfx_size,
+            ticks = r.decode_ticks_min,
+            ratio = ratio,
+        ));
+    }
+    md.push_str("\n");
+    if let (Some(r386), Some(rp5)) = (ratio_386, ratio_pentium) {
+        md.push_str(&format!(
+            "* Phase 3 gate check (decode-only): 386/8086 = **{r386:.2}×**, pentium/8086 = **{rp5:.2}×** → **{verdict}**.\n",
+            verdict = if gate_met { "gate met" } else { "gate not met" }
+        ));
+    }
+    md.push_str("\n## End-to-end wall-clock (DOSBox-X cycles=auto)\n\n");
+    md.push_str("| Tier | Wall clock min (ms) | Ratio vs 8086 |\n");
+    md.push_str("|------|----------------------|----------------|\n");
+    for r in results {
+        let ratio = baseline_wall as f64 / r.wall_clock_min_ms.max(1) as f64;
+        md.push_str(&format!(
+            "| {tier} | {ms} | {ratio:.2}× |\n",
+            tier = r.tier,
             ms = r.wall_clock_min_ms,
             ratio = ratio,
         ));
     }
     md.push_str("\n## Per-run detail\n\n");
-    md.push_str("| Tier | Run 1 (ms) | Run 2 (ms) | Run 3 (ms) |\n");
-    md.push_str("|------|------------|------------|------------|\n");
+    md.push_str("| Tier | Decode run 1 (ticks) | Decode run 2 (ticks) | Decode run 3 (ticks) | Wall run 1 (ms) | Wall run 2 (ms) | Wall run 3 (ms) |\n");
+    md.push_str("|------|----------------------|----------------------|----------------------|-----------------|-----------------|-----------------|\n");
     for r in results {
-        let cells: Vec<String> = (0..RUNS_PER_TIER)
+        let decode_cells: Vec<String> = (0..RUNS_PER_TIER)
+            .map(|i| {
+                r.decode_ticks_runs
+                    .get(i)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let wall_cells: Vec<String> = (0..RUNS_PER_TIER)
             .map(|i| r.runs.get(i).map(|v| v.to_string()).unwrap_or_default())
             .collect();
         md.push_str(&format!(
-            "| {tier} | {} |\n",
-            cells.join(" | "),
+            "| {tier} | {} | {} |\n",
+            decode_cells.join(" | "),
+            wall_cells.join(" | "),
             tier = r.tier,
         ));
     }
     md.push_str(
         "\n## Caveats\n\n\
-         * `cycles=auto` is DOSBox-X's heuristic throughput scaler; results vary with host \
-           CPU and DOSBox-X version. Pentium emulation is more expensive per guest instruction \
-           than 386 emulation, which partially offsets the speed-optimized depacker's win.\n\
-         * Most wall-clock time is DOS startup overhead and INT 21h file I/O, not the depacker. \
-           The depacker is a small slice of the total run.\n\
-         * PLAN.md §10 Phase 3 Verify explicitly lists \"386 is 2-4x faster than 8086, pentium \
-           is 5-10x faster\" as the expected benchmark outcome — it does not qualify that as \
-           real-hardware-only. The numbers above miss that gate. What we can assert from this \
-           harness is correctness, not relative depacker performance: the DOSBox-X correctness \
-           gates (`dosbox_8086`, `dosbox_aplib_8086`, `dosbox_aplib_386`, \
-           `dosbox_aplib_pentium`, and the multi-chunk `dosbox_aplib_large`) all extract \
-           byte-identical payloads at every tier. Where the speedup went is currently a \
-           hypothesis, not a measurement: DOSBox-X with `cycles=auto` is a noisy substrate \
-           for relative-CPU comparison (per-cputype emulation cost varies with the host \
-           CPU and DOSBox-X build), and DOS startup + INT 21h file I/O likely dominate the \
-           2-second wall-clock. Confirming or refuting the depacker-is-fine hypothesis needs \
-           either isolated depacker timing (a stub-side INT 1Ah cycle counter that times \
-           just the depacker call, not the whole SFX) or real-iron measurement (86Box or a \
-           real 386 / Pentium box). Phase 3 ships the ports and the correctness gates; the \
-           perf gate is acknowledged unmet here for the user to direct.\n\
+         * `INT 1Ah` has coarse resolution (~54.9 ms/tick), so small payloads are noisy. \
+           The 500 KiB payload keeps decode long enough to make ratios stable.\n\
+         * `INT 1Ah` wraps at midnight. This harness only times single decode calls that run \
+           for seconds, so unsigned tick-delta arithmetic is safe.\n\
+         * Wall-clock and decode-time are both useful: the decode ratio tracks `aplib_depack` \
+           itself; wall-clock still reflects user-visible elapsed time including DOS startup and \
+           INT 21h file I/O.\n\
          * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI's \
            `cargo test --workspace -- --ignored` run skips it via the env-var check, so this \
            file is only regenerated by a local opt-in run. Commit a refreshed copy when the \
@@ -343,4 +387,22 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     );
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
+}
+
+fn read_aplib_ticks_file(rundir: &Path, tier: &str, run: usize) -> u32 {
+    let perf = locate_case_insensitive(rundir, "DKPERF.BIN")
+        .unwrap_or_else(|| panic!("missing DKPERF.BIN (tier {tier} run {run})"));
+    let bytes = fs::read(&perf).unwrap_or_else(|e| {
+        panic!(
+            "failed to read {} (tier {tier} run {run}): {e}",
+            perf.display()
+        )
+    });
+    if bytes.len() < 4 {
+        panic!(
+            "short DKPERF.BIN ({} bytes) (tier {tier} run {run})",
+            bytes.len()
+        );
+    }
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }

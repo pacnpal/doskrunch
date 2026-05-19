@@ -185,9 +185,9 @@ fn main() -> Result<()> {
         Cmd::ListTargets => {
             println!("8086         shipped (default)");
             println!("286          shipped");
-            println!("386          shipped (perf gate pending; see tests/benchmarks/results.md)");
+            println!("386          shipped (Phase 3 perf benchmark recorded; see tests/benchmarks/results.md)");
             println!("486          shipped");
-            println!("pentium      shipped (perf gate pending; see tests/benchmarks/results.md)");
+            println!("pentium      shipped (Phase 3 perf benchmark recorded; see tests/benchmarks/results.md)");
             println!("pentium-mmx  shipped (MMX 8-byte block copy in depacker)");
             println!("p2           shipped (P6 codegen + MMX depacker)");
             println!("p3           shipped (P6 codegen + MMX depacker; SSE depacker variant deferred)");

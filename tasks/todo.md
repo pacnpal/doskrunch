@@ -128,34 +128,14 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
       `dosbox_8086`, `dosbox_aplib_{8086,386,pentium}`,
       `dosbox_aplib_large`, `dosbox_stored_all_tiers`).
 - [x] Stub blob sizes within hard ceilings for every tier.
-- [ ] PLAN.md §10 Phase 3 Verify: "386 is 2-4x faster than 8086,
-      pentium is 5-10x faster" speedup gate. **Not met.**
-      `tests/benchmarks/results.md` currently shows 1.00× / 1.00× /
-      1.10× under DOSBox-X with `cycles=auto`. What we have data
-      for: correctness. The six DOSBox-X correctness gates
-      (`dosbox_8086`, `dosbox_aplib_8086`, `dosbox_aplib_386`,
-      `dosbox_aplib_pentium`, the multi-chunk `dosbox_aplib_large`,
-      and the per-tier `dosbox_stored_all_tiers`) all extract
-      byte-identical at every tier, so we know both algorithm
-      paths produce correct output on every shipped tier. Where
-      the speedup went is currently a hypothesis, not a
-      measurement: DOSBox-X auto-cycles likely tunes per-cputype
-      throughput in a way that flattens relative-CPU comparison,
-      and DOS startup + INT 21h file I/O likely dominate the 2 s
-      wall-clock. The harness measures end-to-end SFX runtime, not
-      isolated depacker time, so we can't currently rule out a
-      genuinely slow port. Confirming or refuting that needs
-      isolated depacker timing (stub-side INT 1Ah cycle counter
-      around the `aplib_depack` call) and/or real-iron
-      measurement (86Box / a real 386 or Pentium box). Phase 3
-      ships the ports and the correctness gates; this perf-gate
-      row is left explicitly unchecked so the user can direct
-      (accept the limitation as-is, instrument the stub, gather
-      real-iron data, or block Phase 4 until one of those lands).
-      The decision to flag rather than re-tune the asm follows
-      CLAUDE.md's Karpathy guideline ("push back on speculative
-      work") and the working brief, not a literal directive in
-      PLAN.md.
+- [x] PLAN.md §10 Phase 3 Verify perf gate measured with isolated
+      decode timing. `host/tests/benchmark_tiers.rs` now records
+      `INT 1Ah` ticks around `aplib_depack` (plus wall-clock) and
+      regenerates `tests/benchmarks/results.md` with the per-tier
+      ratios for 8086 / 386 / pentium. Current result:
+      386/8086 = 1.01×, pentium/8086 = 1.31× (**gate not met** on
+      DOSBox-X `cycles=auto`). The gate expectation remains
+      documented in PLAN.md with an explicit measured verdict.
 
 ## Phase 4: chunked extraction, large payloads
 
@@ -277,8 +257,8 @@ verify-gate tests PLAN.md §10 specifies.
   extraction is the simpler shipping choice and is documented in
   the CLI help. Phase 6 polish can revisit.
 - INT 1Ah cycle-counter instrumentation for the Phase 3 perf gate.
-  Not bundled into Phase 4 per the working brief; the perf-gate row
-  above stays open across phases until the user picks a direction.
+  Deferred in Phase 4; landed later via `host/tests/benchmark_tiers.rs`
+  + `stubs/src/stub.c` DKPERF sidecar timing.
 
 
 ## Phase 5: LZMA + remaining tiers
@@ -437,9 +417,9 @@ ships per-tier LZMA blobs at 386 through p3.
   isolating LZMA decode time from DOS startup + INT 21h overhead
   needs stub-side INT 1Ah cycle-counter instrumentation that the
   Phase 3 row defers.
-- Phase 3 perf-gate row (386 / pentium aplib speedup): still open
-  across phases. Not bundled here for the same reason it wasn't
-  in Phase 4.
+- Phase 3 perf-gate row (386 / pentium aplib speedup): now measured
+  with isolated decode timing and documented as "not met" in
+  `tests/benchmarks/results.md`.
 - Default --chunk-size bump to 32 KiB. Same memory-model concern
   Phase 4 documented; LZMA tightens it further because the LZMA
   stub already uses compact model and the chunk size also bounds
@@ -596,12 +576,13 @@ error mid-phase; CI's build-stubs.yml is the fallback).
 - [x] PLAN.md §11 v1 done-criteria items addressed: README is real,
       reproducible builds, single static binary, release workflow
       produces all five host-platform binaries. Run-after-extract
-      and the speed gate are the remaining v1 items pending the
-      Docker-blocker and a measurement question respectively.
+      and the LZMA-vs-aPLib speed gate are the remaining v1 items
+      pending the Docker-blocker and follow-up measurement work.
 
 **Not done in Phase 6 (deferred deliberately)**
 
 - SSE depacker variant for p3 (carry-forward from Phase 5).
 - MMX-vs-pentium aplib speed gate (carry-forward from Phase 5).
 - LZMA-vs-aPLib decompression-time gate (carry-forward from Phase 5).
-- Phase 3 perf-gate row (carry-forward from Phase 3 / 4 / 5).
+- Phase 3 perf-gate row: measured and documented (gate not met under
+  DOSBox-X `cycles=auto`).

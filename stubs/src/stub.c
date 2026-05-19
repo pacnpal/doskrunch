@@ -175,6 +175,17 @@ static u32 rd_u32(const u8 *p)
          | ((u32)p[3] << 24);
 }
 
+/* BIOS timer tick counter: INT 1Ah/AH=00h, returns CX:DX ticks since
+ * midnight at ~18.2065 Hz. Available on 8086+ and stable across all
+ * doskrunch target tiers. */
+static u32 bios_ticks_now(void)
+{
+    union REGS inregs, outregs;
+    inregs.h.ah = 0x00;
+    int86(0x1a, &inregs, &outregs);
+    return ((u32)outregs.x.cx << 16) | (u32)outregs.x.dx;
+}
+
 /* Case-insensitive equality against an upper-case literal. `lit` must
  * be ASCII upper-case; `s` is the name stem we're checking. */
 static int ieq_upper(const char *s, unsigned slen, const char *lit)
@@ -242,10 +253,27 @@ static int validate_name(const char *s, unsigned slen)
     return 0;
 }
 
+/* Benchmark harness marker payload: BENCH_PA.BIN (8.3-mangled form of
+ * bench_payload.bin). Used only to gate optional perf sidecar output
+ * in benchmark runs so normal extraction doesn't create extra files. */
+static int is_bench_payload_name(const char *s)
+{
+    static const char BENCH[] = "BENCH_PA";
+    unsigned i = 0;
+    while (s[i] != '\0' && s[i] != '.' && i < sizeof(BENCH) - 1) {
+        char c = s[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if (c != BENCH[i]) return 0;
+        i++;
+    }
+    return i == sizeof(BENCH) - 1;
+}
+
 int main(int argc, char **argv)
 {
     int self;
     int out;
+    int perf_mode = 0;
     u32 archive_off;
     long self_size;
     u16 file_count;
@@ -253,6 +281,7 @@ int main(int argc, char **argv)
     u16 flags;
     u16 run_after_offset;
     u8 algo;
+    u32 aplib_ticks_total = 0;
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
     u8 hcrc[4];
@@ -335,6 +364,7 @@ int main(int argc, char **argv)
             die("unsafe name");
         }
         if (read_exact(self, &attrs, 1) != 0) die("read attrs");
+        if (is_bench_payload_name(namebuf)) perf_mode = 1;
         if (read_exact(self, ts_b, 4) != 0)   die("read ts");
         ts = rd_u32(ts_b);
         dos_time = (u16)(ts & 0xFFFFu);
@@ -364,8 +394,12 @@ int main(int argc, char **argv)
         for (ci = 0; ci < chunk_count; ci++) {
             u16 csize;
             u16 usize;
+            u16 rep;
+            u16 reps;
             unsigned wrote;
             unsigned produced;
+            u32 t0;
+            u32 t1;
             if (read_exact(self, ch_b, 4) != 0) die("read chunk header");
             csize = rd_u16(ch_b);
             usize = rd_u16(ch_b + 2);
@@ -381,8 +415,14 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
-                produced = aplib_depack(g_src, g_buf);
-                if (produced != usize) die("aplib size");
+                reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                for (rep = 0; rep < reps; rep++) {
+                    t0 = bios_ticks_now();
+                    produced = aplib_depack(g_src, g_buf);
+                    t1 = bios_ticks_now();
+                    aplib_ticks_total += (u32)(t1 - t0);
+                    if (produced != usize) die("aplib size");
+                }
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
                 }
@@ -440,6 +480,17 @@ int main(int argc, char **argv)
     (void)flags;
     (void)run_after_offset;
     (void)g_run_after;
+
+    if (algo == 1) {
+        if (perf_mode) {
+            int perf_h;
+            if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) == 0) {
+                unsigned wrote = 0;
+                (void)_dos_write(perf_h, &aplib_ticks_total, 4, &wrote);
+                _dos_close(perf_h);
+            }
+        }
+    }
 
     _dos_close(self);
     return 0;
