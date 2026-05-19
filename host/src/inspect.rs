@@ -39,15 +39,29 @@ pub fn inspect(opts: InspectOptions) -> Result<()> {
         (tc as f64) / (tu as f64) * 100.0
     };
     println!("ratio        : {:.2}% of original", ratio);
+    // Print the actual run-after command if it's set. Strip the
+    // trailing NUL for human display; the bytes on disk include it.
+    if let Some(ref cmd) = archive.run_after_command {
+        let printable = cmd.split(|&b| b == 0).next().unwrap_or(cmd);
+        println!(
+            "run-after    : {} (at archive offset {})",
+            String::from_utf8_lossy(printable),
+            archive.run_after_offset
+        );
+    }
     println!();
+    // Per-file table. Chunk count is useful for diagnosing per-chunk
+    // bugs (e.g. multi-chunk decode regressions); it's bounded by u16
+    // so the column never widens past 5 digits.
     println!(
-        "{:<14}  {:>10}  {:>10}  {:>10}",
-        "name", "usize", "csize", "crc32"
+        "{:<14}  {:>5}  {:>10}  {:>10}  {:>10}",
+        "name", "chunk", "usize", "csize", "crc32"
     );
     for f in &archive.files {
         println!(
-            "{:<14}  {:>10}  {:>10}  {:08x}",
+            "{:<14}  {:>5}  {:>10}  {:>10}  {:08x}",
             f.display_name(),
+            f.chunks.len(),
             f.uncompressed_size(),
             f.compressed_size(),
             f.crc32

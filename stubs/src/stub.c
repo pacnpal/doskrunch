@@ -50,6 +50,20 @@ typedef unsigned long  u32;
 static u8  g_src[APLIB_SRC_SIZE];
 static u8  g_buf[BUF_SIZE];
 
+/* Run-after-extract command buffer (Phase 6, host-side only today).
+ * Matches host/src/archive.rs::RUN_AFTER_MAX_LEN. The BSS slot
+ * reserves the space; the actual reading-and-EXEC is deferred to
+ * v1.1 — see the longer note at the bottom of main() for why
+ * Watcom's system() blew the 8086 stub-size budget. The v1.1 stub
+ * revision will use this buffer without changing the archive
+ * format. */
+#define RUN_AFTER_BUF 128u
+static char g_run_after[RUN_AFTER_BUF];
+
+/* Archive header flag bits. Must match host/src/archive.rs::flags. */
+#define FLAG_RUN_AFTER     0x0001u
+#define FLAG_REPRODUCIBLE  0x0004u
+
 /* Decompress an aPLib stream pointed to by `src` into `dst`. Returns the
  * decompressed byte count. Implemented in stubs/src/aplib_depack_16.asm
  * (ported from apultra's asm/8088/aplib_8088_small.S).
@@ -82,6 +96,18 @@ static u8  g_buf[BUF_SIZE];
  * trusted. */
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
 #pragma aux aplib_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
+
+/* LZSA2 raw-block decompressor (Phase 6). Same Watcom small-model
+ * regparm ABI as aplib_depack — src in SI, dst in DI, return in AX.
+ * Implemented in stubs/src/lzsa2_depack_{16,32}.asm (the Makefile
+ * picks the .obj per tier). Trust boundary: same caveats as
+ * aplib_depack apply — the depacker has no destination-capacity
+ * argument and stops at the LZSA2 EOD marker, so a corrupted block
+ * could walk DI past the end of g_buf. The host enforces
+ * LZSA2_CHUNK_INPUT = 16 KiB and rewrites a per-file CRC32 during
+ * pack; same trusted-producer threat model documented above. */
+extern unsigned int lzsa2_depack(const u8 *src, u8 *dst);
+#pragma aux lzsa2_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
 
 static const char DKCH[4] = { 'D', 'K', 'C', 'H' };
 static const char DKTR[4] = { 'D', 'K', 'T', 'R' };
@@ -224,6 +250,8 @@ int main(int argc, char **argv)
     long self_size;
     u16 file_count;
     u16 i;
+    u16 flags;
+    u16 run_after_offset;
     u8 algo;
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
@@ -258,8 +286,20 @@ int main(int argc, char **argv)
 
     if (hdr[4] != 1)  die("bad version");
     algo = hdr[5];
-    if (algo > 1) die("bad algo");
+    /* This stub handles algo 0 (stored), 1 (aplib), and 2 (lzsa2).
+     * LZMA (algo == 3) is in a separate per-tier blob (stub_lzma.c)
+     * because its decoder state + dict don't fit in our small-model
+     * BSS. The host's stub_for() routes by (algo, target), so seeing
+     * algo == 3 here means a stub-vs-archive mismatch. */
+    if (algo > 2) die("bad algo");
+    flags = rd_u16(hdr + 7);
     file_count = rd_u16(hdr + 9);
+    /* Header layout (must match host/src/archive.rs): bytes 11-14 are
+     * total_uncompressed, 15-18 are total_compressed, 19-20 are the
+     * run_after_offset u16. The previous revision read offset 15 by
+     * mistake, which would have picked up the low half of
+     * total_compressed when the v1.1 stub starts honoring this. */
+    run_after_offset = rd_u16(hdr + 19);
 
     for (i = 0; i < file_count; i++) {
         u8  name_len_b;
@@ -336,7 +376,7 @@ int main(int argc, char **argv)
             if (algo == 0) {
                 if (csize != usize) die("stored size mismatch");
                 if (copy_bytes(self, out, (u32)csize) != 0) die("copy");
-            } else {
+            } else if (algo == 1) {
                 /* aplib: read whole compressed chunk, depack, write out. */
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
@@ -345,6 +385,22 @@ int main(int argc, char **argv)
                 if (produced != usize) die("aplib size");
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
+                }
+            } else {
+                /* lzsa2 (algo == 2). Same shape as aplib, different
+                 * depacker. Per-chunk compressed cap matches
+                 * archive.rs::LZSA2_MAX_COMPRESSED_CHUNK = 17 KiB and
+                 * fits in g_src (APLIB_SRC_SIZE = 18464 B); the
+                 * uncompressed cap is LZSA2_CHUNK_INPUT = 16 KiB,
+                 * exactly BUF_SIZE. Buffers are shared with the aplib
+                 * path so the stub doesn't pay extra BSS for LZSA2. */
+                if (csize > APLIB_SRC_SIZE) die("lzsa2 csize");
+                if (usize > BUF_SIZE)       die("lzsa2 usize");
+                if (read_exact(self, g_src, csize) != 0) die("read lzsa2");
+                produced = lzsa2_depack(g_src, g_buf);
+                if (produced != usize) die("lzsa2 size");
+                if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
+                    die("write lzsa2");
                 }
             }
         }
@@ -360,6 +416,30 @@ int main(int argc, char **argv)
         puts2(namebuf);
         puts2("\r\n");
     }
+
+    /* Run-after-extract (Phase 6 host-side; stub-side deferred to
+     * v1.1). The host writes the RUN_AFTER flag and a NUL-terminated
+     * command line at `archive_off + run_after_offset` so `doskrunch
+     * inspect` shows it and any future stub revision can pick it up
+     * without an archive-format change. The stub does NOT invoke the
+     * command yet:
+     *
+     * The obvious path is Watcom's `system(g_run_after)`, but pulling
+     * COMMAND.COM lookup + the C-runtime spawn machinery into the
+     * stub adds ~4.5 KiB and pushes the 8086 blob past its 8 KiB
+     * hard ceiling (measured: aplib_8086.bin would land at 11234
+     * bytes). The cheaper path is a hand-rolled inline-asm wrapper
+     * around INT 21h/4Bh (parameter block + counted command line) —
+     * call it ~100 bytes — but it needs careful edge-case testing on
+     * real DOS for child-process FCB / SS:SP / errorlevel handling.
+     *
+     * Deferred so the v1 SFX stays inside its stub budgets. (void)
+     * casts below suppress "set but not used" warnings on flags /
+     * run_after_offset / g_run_after, all of which the v1.1 stub
+     * revision will start reading. */
+    (void)flags;
+    (void)run_after_offset;
+    (void)g_run_after;
 
     _dos_close(self);
     return 0;

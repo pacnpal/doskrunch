@@ -156,9 +156,27 @@ pub struct Archive {
     pub algorithm: Algorithm,
     pub target: TargetTier,
     pub flags: u16,
+    /// Byte offset (relative to the archive header start) where the
+    /// run-after-extract command string lives. Computed by `write` and
+    /// populated by `read`; callers should set `run_after_command`
+    /// instead of touching this field directly.
     pub run_after_offset: u16,
     pub files: Vec<FileEntry>,
+    /// Optional NUL-terminated command line invoked via INT 21h/4Bh
+    /// after extraction completes. Plain DOS argv: 8.3 program name
+    /// optionally followed by a space and args. Capped at
+    /// `RUN_AFTER_MAX_LEN` (incl. the trailing NUL); the cap matches
+    /// `RUN_AFTER_BUF` in stubs/src/stub.c. Set
+    /// `flags::RUN_AFTER` and assign the command via `set_run_after`
+    /// (which keeps both fields consistent).
+    pub run_after_command: Option<Vec<u8>>,
 }
+
+/// Hard cap on the run-after command bytes (including trailing NUL).
+/// Matches `RUN_AFTER_BUF` in stubs/src/stub.c — the stub allocates
+/// a fixed buffer of this size in BSS to slurp the command at
+/// extract time, and won't read past it.
+pub const RUN_AFTER_MAX_LEN: usize = 128;
 
 impl Archive {
     pub fn new(algorithm: Algorithm, target: TargetTier) -> Self {
@@ -169,8 +187,102 @@ impl Archive {
             flags: 0,
             run_after_offset: 0,
             files: Vec::new(),
+            run_after_command: None,
         }
     }
+
+    /// Set the run-after command and flip the matching flag bit.
+    /// Returns an error if `command` is empty, contains a NUL, or
+    /// (after appending the trailing NUL) exceeds `RUN_AFTER_MAX_LEN`.
+    pub fn set_run_after(&mut self, command: &str) -> Result<(), ArchiveError> {
+        let bytes = command.as_bytes();
+        if bytes.is_empty() {
+            return Err(ArchiveError::RunAfterEmpty);
+        }
+        if bytes.contains(&0) {
+            return Err(ArchiveError::RunAfterContainsNul);
+        }
+        // The stub's command buffer is RUN_AFTER_MAX_LEN bytes
+        // including the trailing NUL. Cap the input here so the
+        // archive never writes a command the stub will refuse.
+        if bytes.len() + 1 > RUN_AFTER_MAX_LEN {
+            return Err(ArchiveError::RunAfterTooLong {
+                given: bytes.len(),
+                max: RUN_AFTER_MAX_LEN - 1,
+            });
+        }
+        // Reject non-printable / non-ASCII bytes. DOS COMMAND.COM
+        // would mishandle them and they can't appear in a legitimate
+        // 8.3 EXEC command line anyway.
+        for &b in bytes {
+            if !(0x20..=0x7E).contains(&b) {
+                return Err(ArchiveError::RunAfterBadByte(b));
+            }
+        }
+        let mut owned = bytes.to_vec();
+        owned.push(0);
+        self.run_after_command = Some(owned);
+        self.flags |= flags::RUN_AFTER;
+        Ok(())
+    }
+}
+
+/// Validate the on-wire bytes of a run-after command: NUL-terminated,
+/// at least one printable-ASCII byte before the NUL, no embedded NULs,
+/// total length within `RUN_AFTER_MAX_LEN`. Used by both `Archive::write`
+/// (defending against a caller who set `run_after_command` directly,
+/// bypassing `set_run_after`'s validation) and `Archive::read` (so a
+/// hostile archive can't smuggle garbage past the parser).
+///
+/// Mirrors `Archive::set_run_after`'s checks; both call sites should
+/// reject the same inputs.
+fn validate_run_after_bytes(cmd: &[u8]) -> Result<(), ArchiveError> {
+    // Empty slice → RunAfterEmpty (matches set_run_after's reading
+    // of an empty input). Don't fold it into RunAfterTooLong; the
+    // two cases have different meanings and the CLI maps the error
+    // text differently.
+    if cmd.is_empty() {
+        return Err(ArchiveError::RunAfterEmpty);
+    }
+    if cmd.len() > RUN_AFTER_MAX_LEN {
+        // Express `given` in pre-NUL bytes (cmd.len() - 1) so it
+        // matches what `set_run_after`'s error reports (the latter
+        // measures the user-supplied string before pushing the
+        // trailing NUL). `max` is already RUN_AFTER_MAX_LEN - 1
+        // (the pre-NUL ceiling); keeping the units symmetric stops
+        // the error message from looking off-by-one to anyone
+        // comparing the two paths.
+        return Err(ArchiveError::RunAfterTooLong {
+            given: cmd.len() - 1,
+            max: RUN_AFTER_MAX_LEN - 1,
+        });
+    }
+    // Must end in the trailing NUL the stub uses to terminate the
+    // command line.
+    if cmd[cmd.len() - 1] != 0 {
+        return Err(ArchiveError::RunAfterMissingNul);
+    }
+    // Just the NUL — empty command. Same RunAfterEmpty as above so
+    // callers can pattern-match on a single variant.
+    if cmd.len() == 1 {
+        return Err(ArchiveError::RunAfterEmpty);
+    }
+    let body = &cmd[..cmd.len() - 1];
+    // No embedded NULs in the body — the loop above guarantees there's
+    // one at the end, but a malformed archive could carry more.
+    if body.contains(&0) {
+        return Err(ArchiveError::RunAfterContainsNul);
+    }
+    // Same printable-ASCII gate set_run_after enforces.
+    for &b in body {
+        if !(0x20..=0x7E).contains(&b) {
+            return Err(ArchiveError::RunAfterBadByte(b));
+        }
+    }
+    Ok(())
+}
+
+impl Archive {
 
     /// Sum of every file's uncompressed and compressed sizes. The
     /// public `pack` path validates the cumulative total fits in u32
@@ -200,15 +312,97 @@ impl Archive {
     }
 
     pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let header = self.encode_header();
+        // Compute the on-disk flags + run_after_offset before
+        // serializing. Header is 25 bytes (4 magic + 17 fields + 4
+        // CRC); per-file records each contribute `serialized_file_size`
+        // bytes; the run-after command, when present, begins right
+        // after them.
+        //
+        // The Copilot-flagged prior version cloned `self` (and with it
+        // every per-chunk compressed Vec<u8>) just to override two
+        // u16 fields before encoding the header. That doubled peak
+        // memory for the duration of the write; route the overrides
+        // through encode_header_with directly instead.
+        let (effective_flags, run_after_offset) = match &self.run_after_command {
+            Some(cmd) => {
+                // `run_after_command` is a public field, so callers
+                // can bypass `set_run_after`'s validation and stuff
+                // arbitrary bytes here. Validate before serializing
+                // so we never write a command the stub can't safely
+                // execute (missing NUL, empty, embedded NULs,
+                // non-printable bytes, oversize).
+                validate_run_after_bytes(cmd).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, e.to_string())
+                })?;
+                let header_size: u32 = 25;
+                let files_size: u32 = self
+                    .files
+                    .iter()
+                    .map(serialized_file_size)
+                    .try_fold(0u32, |acc, v| {
+                        v.and_then(|v| acc.checked_add(v))
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "run-after: cumulative file records exceed u32",
+                        )
+                    })?;
+                let offset = header_size.checked_add(files_size).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "run-after: offset would overflow u32",
+                    )
+                })?;
+                let offset_u16: u16 = offset.try_into().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        // The u16 ceiling caps the run-after-addressable
+                        // archive size at ~64 KiB of header + file
+                        // records (the chunk *data* itself is what
+                        // bloats archives past this; payloads with
+                        // little compressible data hit it sooner).
+                        // Refuse rather than silently truncating.
+                        format!(
+                            "run-after: cumulative archive prefix ({offset} bytes) \
+                             exceeds the {} byte u16 run_after_offset ceiling — \
+                             too many or too-large file entries to address the \
+                             command via the on-disk u16 offset",
+                            u16::MAX
+                        ),
+                    )
+                })?;
+                // Be defensive: if the caller forgot to set the flag,
+                // honour the presence of the command and set it now.
+                (self.flags | flags::RUN_AFTER, offset_u16)
+            }
+            None => {
+                // No command. Zero the offset and clear the flag in
+                // case the caller left it set inconsistently.
+                (self.flags & !flags::RUN_AFTER, 0)
+            }
+        };
+
+        let header = self.encode_header_with(effective_flags, run_after_offset);
         w.write_all(&header)?;
         for f in &self.files {
             write_file(w, f)?;
         }
+        if let Some(ref cmd) = self.run_after_command {
+            // The run-after flag we computed above implies cmd is
+            // Some; only write the bytes when that flag is set so a
+            // caller that set `run_after_command` without
+            // RUN_AFTER-compatible bytes still serializes a valid
+            // archive (the None arm above clears the flag in that
+            // case).
+            if effective_flags & flags::RUN_AFTER != 0 {
+                w.write_all(cmd)?;
+            }
+        }
         Ok(())
     }
 
-    fn encode_header(&self) -> Vec<u8> {
+    fn encode_header_with(&self, flags: u16, run_after_offset: u16) -> Vec<u8> {
         let (total_u, total_c) = self.totals();
         let file_count: u16 = self
             .files
@@ -220,11 +414,11 @@ impl Archive {
         h.push(self.version);
         h.push(self.algorithm as u8);
         h.push(self.target as u8);
-        h.extend_from_slice(&self.flags.to_le_bytes());
+        h.extend_from_slice(&flags.to_le_bytes());
         h.extend_from_slice(&file_count.to_le_bytes());
         h.extend_from_slice(&total_u.to_le_bytes());
         h.extend_from_slice(&total_c.to_le_bytes());
-        h.extend_from_slice(&self.run_after_offset.to_le_bytes());
+        h.extend_from_slice(&run_after_offset.to_le_bytes());
         let crc = crc32fast::hash(&h);
         h.extend_from_slice(&crc.to_le_bytes());
         h
@@ -280,6 +474,71 @@ impl Archive {
         for _ in 0..file_count {
             files.push(read_file(r, &mut budget)?);
         }
+
+        // Optional run-after command after the per-file records.
+        // Read bytes until NUL or RUN_AFTER_MAX_LEN, whichever comes
+        // first. If the RUN_AFTER flag is set but no offset was
+        // declared, the producer is inconsistent — reject. Same the
+        // other way (offset set without the flag) so a hostile
+        // producer can't smuggle a run-after past inspect.
+        let has_flag = flags & crate::archive::flags::RUN_AFTER != 0;
+        let has_offset = run_after_offset != 0;
+        let run_after_command = if has_flag != has_offset {
+            return Err(ArchiveError::RunAfterInconsistent {
+                flag_set: has_flag,
+                offset: run_after_offset,
+            });
+        } else if has_flag {
+            // Verify the declared offset matches where the reader
+            // actually is after the per-file records. The reader's
+            // R: Read trait doesn't expose the stream position, so
+            // reconstruct it the same way Archive::write computes it:
+            // 25-byte header + sum(serialized_file_size). A hostile
+            // archive that lies about run_after_offset would still
+            // round-trip on the host (the loop below just reads from
+            // wherever the cursor is), but the stub seeks to the
+            // header's offset — so a mismatch lets a producer point
+            // the stub at different bytes than the host sees in
+            // `inspect`. Reject before the divergence matters.
+            let expected_offset: u32 = self_consistency_check_offset(25, &files)?;
+            let expected_u16: u16 = expected_offset.try_into().map_err(|_| {
+                ArchiveError::RunAfterInconsistent {
+                    flag_set: has_flag,
+                    offset: run_after_offset,
+                }
+            })?;
+            if expected_u16 != run_after_offset {
+                return Err(ArchiveError::RunAfterOffsetMismatch {
+                    declared: run_after_offset,
+                    expected: expected_u16,
+                });
+            }
+            let mut buf = Vec::with_capacity(64);
+            loop {
+                if buf.len() >= RUN_AFTER_MAX_LEN {
+                    return Err(ArchiveError::RunAfterTooLong {
+                        given: buf.len(),
+                        max: RUN_AFTER_MAX_LEN - 1,
+                    });
+                }
+                let mut byte = [0u8; 1];
+                r.read_exact(&mut byte)?;
+                buf.push(byte[0]);
+                if byte[0] == 0 {
+                    break;
+                }
+            }
+            // Run the same byte-level validation `Archive::write` and
+            // `set_run_after` apply. A hostile archive could carry an
+            // empty command (just the NUL), embedded NULs, or
+            // non-printable bytes that would corrupt the eventual
+            // stub-side EXEC; reject at parse time.
+            validate_run_after_bytes(&buf)?;
+            Some(buf)
+        } else {
+            None
+        };
+
         Ok(Self {
             version,
             algorithm,
@@ -287,8 +546,50 @@ impl Archive {
             flags,
             run_after_offset,
             files,
+            run_after_command,
         })
     }
+}
+
+/// Sum `header_size + sum(serialized_file_size(f))` for use as the
+/// expected `run_after_offset`. Same accounting `Archive::write` does
+/// when serializing; `Archive::read` calls this to verify the stub
+/// will seek to the same bytes the host parsed.
+fn self_consistency_check_offset(
+    header_size: u32,
+    files: &[FileEntry],
+) -> Result<u32, ArchiveError> {
+    let mut total: u32 = header_size;
+    for f in files {
+        let s = serialized_file_size(f).ok_or(ArchiveError::SizeOverflow)?;
+        total = total.checked_add(s).ok_or(ArchiveError::SizeOverflow)?;
+    }
+    Ok(total)
+}
+
+/// Number of bytes a file entry takes on disk. Used by `Archive::write`
+/// to compute the run-after-command offset before serialization.
+/// Mirrors `write_file`'s output: 1-byte name length, name bytes,
+/// 1-byte attrs, 4-byte timestamp, 4-byte uncompressed size, 2-byte
+/// chunk count, per chunk (4-byte header + compressed bytes), 4-byte
+/// CRC32.
+///
+/// Returns `None` on overflow rather than saturating — a saturating
+/// sum would silently clamp at u32::MAX and let `Archive::write`
+/// emit an invalid run_after_offset for a pathologically large
+/// archive. The caller's try_fold turns the None into a
+/// "cumulative file records exceed u32" error.
+fn serialized_file_size(f: &FileEntry) -> Option<u32> {
+    let mut size: u32 = 1u32
+        .checked_add(u32::try_from(f.name.len()).ok()?)?
+        .checked_add(1 + 4 + 4 + 2 + 4)?;
+    for c in &f.chunks {
+        // 4 bytes of per-chunk header (csize + usize) plus the data.
+        size = size
+            .checked_add(4)?
+            .checked_add(u32::try_from(c.data.len()).ok()?)?;
+    }
+    Some(size)
 }
 
 fn write_file<W: Write>(w: &mut W, f: &FileEntry) -> io::Result<()> {
@@ -553,6 +854,21 @@ pub const APLIB_CHUNK_INPUT: usize = 16 * 1024;
 /// LZMA stub's `g_lzma_buf` output scratch is sized to match.
 pub const LZMA_CHUNK_INPUT: usize = 16 * 1024;
 
+/// Maximum uncompressed bytes per LZSA2 chunk. Matches
+/// `APLIB_CHUNK_INPUT` for the same algorithm-independence reason, and
+/// stays under lzsa's per-block ceiling (raw-block mode encodes one
+/// block per call, so chunks above ~64 KiB would fail).
+pub const LZSA2_CHUNK_INPUT: usize = 16 * 1024;
+
+/// Producer-side ceiling on a single LZSA2 chunk's compressed size.
+/// `lzsa_get_max_compressed_size_inmem(16 KiB)` reports ~16.5 KiB for
+/// raw blocks (the LZSA2 worst case is roughly n + n/256 + a few
+/// bytes of header). 17 KiB gives the stub's scratch a fixed compile-
+/// time size and matches the aPLib / LZMA conventions; chunks landing
+/// above this fail the host-side bound check before they reach the
+/// archive, so the stub's runtime `g_lzsa2_src` overrun is unreachable.
+pub const LZSA2_MAX_COMPRESSED_CHUNK: usize = 17 * 1024;
+
 /// Producer-side ceiling on a single LZMA chunk's compressed size. LZMA's
 /// worst-case expansion on incompressible data is roughly `n + n/200 +
 /// 16`, so a 16 KiB chunk caps at ~16.5 KiB. Plus the 1-byte MicroLZMA
@@ -706,6 +1022,67 @@ pub fn build_stored_entry(
     })
 }
 
+/// Build an LZSA2-compressed file entry. Each chunk's uncompressed
+/// payload is at most `chunk_size` bytes (bounded by `LZSA2_CHUNK_INPUT`
+/// at the caller). The compressed stream is a raw LZSA2 block
+/// (`LZSA_FLAG_RAW_BLOCK` on the lzsa encoder), which matches what the
+/// stub-side ASM depackers consume on the wire.
+pub fn build_lzsa2_entry(
+    name_8_3: &str,
+    attrs: u8,
+    timestamp: u32,
+    data: &[u8],
+    chunk_size: usize,
+) -> Result<FileEntry, ArchiveError> {
+    if !(1..=LZSA2_CHUNK_INPUT).contains(&chunk_size) {
+        return Err(ArchiveError::InvalidChunkSize {
+            algorithm: "lzsa2",
+            given: chunk_size,
+            max: LZSA2_CHUNK_INPUT,
+        });
+    }
+    let projected = data.len().div_ceil(chunk_size.max(1));
+    if projected > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(projected));
+    }
+    let crc = crc32fast::hash(data);
+    let mut name = name_8_3.as_bytes().to_vec();
+    name.push(0);
+    let chunks: Vec<Chunk> = if data.is_empty() {
+        vec![Chunk {
+            uncompressed_size: 0,
+            data: Vec::new(),
+        }]
+    } else {
+        let mut out = Vec::with_capacity(data.len().div_ceil(chunk_size));
+        for c in data.chunks(chunk_size) {
+            let compressed = crate::compress::lzsa2::compress(c)
+                .map_err(ArchiveError::Lzsa2Compress)?;
+            if compressed.len() > LZSA2_MAX_COMPRESSED_CHUNK {
+                return Err(ArchiveError::Lzsa2ChunkOverflow {
+                    uncompressed: c.len(),
+                    compressed: compressed.len(),
+                });
+            }
+            out.push(Chunk {
+                uncompressed_size: c.len() as u16,
+                data: compressed,
+            });
+        }
+        out
+    };
+    if chunks.len() > u16::MAX as usize {
+        return Err(ArchiveError::TooManyChunks(chunks.len()));
+    }
+    Ok(FileEntry {
+        name,
+        attrs,
+        timestamp,
+        chunks,
+        crc32: crc,
+    })
+}
+
 /// Build an LZMA-compressed file entry. Each chunk's uncompressed
 /// payload is at most `chunk_size` bytes (bounded by `LZMA_CHUNK_INPUT`
 /// at the caller). The compressed stream is xz-embedded's MicroLZMA
@@ -805,10 +1182,31 @@ pub enum ArchiveError {
         compressed: usize,
     },
     LzmaCompress(String),
+    Lzsa2ChunkOverflow {
+        uncompressed: usize,
+        compressed: usize,
+    },
+    Lzsa2Compress(String),
     InvalidChunkSize {
         algorithm: &'static str,
         given: usize,
         max: usize,
+    },
+    RunAfterEmpty,
+    RunAfterContainsNul,
+    RunAfterMissingNul,
+    RunAfterTooLong {
+        given: usize,
+        max: usize,
+    },
+    RunAfterBadByte(u8),
+    RunAfterInconsistent {
+        flag_set: bool,
+        offset: u16,
+    },
+    RunAfterOffsetMismatch {
+        declared: u16,
+        expected: u16,
     },
 }
 
@@ -859,6 +1257,15 @@ impl std::fmt::Display for ArchiveError {
                 LZMA_MAX_COMPRESSED_CHUNK,
             ),
             Self::LzmaCompress(msg) => write!(f, "{msg}"),
+            Self::Lzsa2ChunkOverflow {
+                uncompressed,
+                compressed,
+            } => write!(
+                f,
+                "lzsa2 chunk: {uncompressed} bytes compressed to {compressed} bytes, exceeding the {} byte stub g_lzsa2_src ceiling",
+                LZSA2_MAX_COMPRESSED_CHUNK,
+            ),
+            Self::Lzsa2Compress(msg) => write!(f, "{msg}"),
             Self::InvalidChunkSize {
                 algorithm,
                 given,
@@ -866,6 +1273,31 @@ impl std::fmt::Display for ArchiveError {
             } => write!(
                 f,
                 "chunk_size {given} is outside the valid range 1..={max} for algorithm '{algorithm}'"
+            ),
+            Self::RunAfterEmpty => write!(f, "run-after command must not be empty"),
+            Self::RunAfterContainsNul => {
+                write!(f, "run-after command contains an embedded NUL byte")
+            }
+            Self::RunAfterMissingNul => {
+                write!(f, "run-after command bytes don't end in the required NUL terminator")
+            }
+            Self::RunAfterTooLong { given, max } => write!(
+                f,
+                "run-after command is {given} bytes; max {max} (the stub's RUN_AFTER_BUF cap)"
+            ),
+            Self::RunAfterBadByte(b) => write!(
+                f,
+                "run-after command contains non-printable byte 0x{b:02x} (only 0x20..=0x7E allowed)"
+            ),
+            Self::RunAfterInconsistent { flag_set, offset } => write!(
+                f,
+                "run-after flag={flag_set} but offset={offset:#06x} — both must be set together or both clear"
+            ),
+            Self::RunAfterOffsetMismatch { declared, expected } => write!(
+                f,
+                "run-after offset mismatch: header declares {declared} but the per-file records \
+                 actually end at {expected} — the stub would seek to bytes the host parser didn't \
+                 see"
             ),
         }
     }
@@ -987,6 +1419,61 @@ mod tests {
         aplib_roundtrip(vec![entry]);
     }
 
+    fn lzsa2_roundtrip(files: Vec<FileEntry>) {
+        let mut a = Archive::new(Algorithm::Lzsa2, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = files;
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let parsed = Archive::read(&mut r).unwrap();
+        assert_eq!(a, parsed);
+    }
+
+    #[test]
+    fn lzsa2_single_file_roundtrips() {
+        let data = b"hello lzsa2 world, hello lzsa2 world, hello lzsa2 world.".repeat(8);
+        let entry = build_lzsa2_entry("HELLO.TXT", 0x20, 0, &data, LZSA2_CHUNK_INPUT).unwrap();
+        let csz: usize = entry.chunks.iter().map(|c| c.data.len()).sum();
+        assert!(
+            csz < data.len(),
+            "expected compression: csz={csz} usz={}",
+            data.len()
+        );
+        assert_eq!(entry.uncompressed_size() as usize, data.len());
+        lzsa2_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzsa2_empty_file_roundtrips() {
+        let entry = build_lzsa2_entry("EMPTY.BIN", 0x20, 0, b"", LZSA2_CHUNK_INPUT).unwrap();
+        assert_eq!(entry.uncompressed_size(), 0);
+        lzsa2_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzsa2_multi_chunk_file_roundtrips() {
+        let data: Vec<u8> = (0..(LZSA2_CHUNK_INPUT + 1024))
+            .map(|i| (i & 0xff) as u8)
+            .collect();
+        let entry = build_lzsa2_entry("BIG.BIN", 0x20, 0, &data, LZSA2_CHUNK_INPUT).unwrap();
+        assert!(entry.chunks.len() >= 2, "should split into multiple chunks");
+        let total: u32 = entry
+            .chunks
+            .iter()
+            .map(|c| c.uncompressed_size as u32)
+            .sum();
+        assert_eq!(total as usize, data.len());
+        lzsa2_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn lzsa2_rejects_chunk_size_above_ceiling() {
+        let data = vec![0u8; 32];
+        let err = build_lzsa2_entry("X.BIN", 0x20, 0, &data, LZSA2_CHUNK_INPUT + 1).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidChunkSize { .. }), "got {err:?}");
+    }
+
     fn lzma_roundtrip(files: Vec<FileEntry>) {
         let mut a = Archive::new(Algorithm::Lzma, TargetTier::I386);
         a.flags = flags::REPRODUCIBLE;
@@ -1058,6 +1545,163 @@ mod tests {
             assert!(c.uncompressed_size as usize <= 8192);
         }
         aplib_roundtrip(vec![entry]);
+    }
+
+    #[test]
+    fn run_after_roundtrips_and_sets_offset() {
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = vec![
+            build_stored_entry("HELLO.TXT", 0x20, 0, b"hi there", STORED_TEST_CHUNK).unwrap(),
+            build_stored_entry("RUN.BAT", 0x20, 0, b"@echo run\r\n", STORED_TEST_CHUNK).unwrap(),
+        ];
+        a.set_run_after("RUN.BAT").unwrap();
+        // set_run_after stores the command bytes + trailing NUL.
+        assert_eq!(a.run_after_command.as_deref(), Some(&b"RUN.BAT\0"[..]));
+        assert_eq!(a.flags & flags::RUN_AFTER, flags::RUN_AFTER);
+
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        let mut r = std::io::Cursor::new(&buf);
+        let parsed = Archive::read(&mut r).unwrap();
+
+        // write() computes the offset; the round-tripped value should
+        // match what we serialized.
+        assert!(parsed.run_after_offset > 25, "offset must be past header");
+        assert_eq!(
+            parsed.run_after_command.as_deref(),
+            Some(&b"RUN.BAT\0"[..])
+        );
+        assert_eq!(parsed.flags & flags::RUN_AFTER, flags::RUN_AFTER);
+
+        // Confirm the offset actually points where the command lives.
+        let off = parsed.run_after_offset as usize;
+        assert_eq!(&buf[off..off + 8], b"RUN.BAT\0");
+    }
+
+    #[test]
+    fn set_run_after_validates_input() {
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        assert!(matches!(
+            a.set_run_after("").unwrap_err(),
+            ArchiveError::RunAfterEmpty
+        ));
+        assert!(matches!(
+            a.set_run_after("PROG\0EVIL").unwrap_err(),
+            ArchiveError::RunAfterContainsNul
+        ));
+        assert!(matches!(
+            a.set_run_after("PROG\nWITHNEWLINE").unwrap_err(),
+            ArchiveError::RunAfterBadByte(0x0a)
+        ));
+        // RUN_AFTER_MAX_LEN includes the trailing NUL.
+        let long = "A".repeat(RUN_AFTER_MAX_LEN);
+        let err = a.set_run_after(&long).unwrap_err();
+        assert!(matches!(err, ArchiveError::RunAfterTooLong { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn no_run_after_keeps_offset_zero() {
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"hi", STORED_TEST_CHUNK).unwrap()];
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+        // Header offset 19-20 carries the run_after_offset (4 magic + 1
+        // version + 1 algo + 1 target + 2 flags + 2 file_count + 4
+        // total_u + 4 total_c = 19, then 2 bytes of u16 offset).
+        let off = u16::from_le_bytes([buf[19], buf[20]]);
+        assert_eq!(off, 0, "no command -> zero offset");
+        let mut r = std::io::Cursor::new(&buf);
+        let parsed = Archive::read(&mut r).unwrap();
+        assert!(parsed.run_after_command.is_none());
+        assert_eq!(parsed.flags & flags::RUN_AFTER, 0);
+    }
+
+    #[test]
+    fn write_rejects_directly_set_invalid_run_after_bytes() {
+        // run_after_command is a public field, so a caller can stuff
+        // arbitrary bytes there and bypass set_run_after. write()
+        // should refuse rather than serializing garbage that the
+        // stub can't safely execute.
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        a.files = vec![build_stored_entry("A.TXT", 0x20, 0, b"x", STORED_TEST_CHUNK).unwrap()];
+
+        // Missing trailing NUL.
+        a.run_after_command = Some(b"BAD".to_vec());
+        let mut buf = Vec::new();
+        let err = a.write(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Embedded NUL in the body.
+        a.run_after_command = Some(b"GO\0BAD\0".to_vec());
+        let err = a.write(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Just the NUL — empty command.
+        a.run_after_command = Some(b"\0".to_vec());
+        let err = a.write(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Non-printable byte (tab) in the body.
+        a.run_after_command = Some(b"A\tB\0".to_vec());
+        let err = a.write(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn read_rejects_hostile_run_after_bytes() {
+        // Hand-craft an archive with a valid header + valid file
+        // record but a malformed command (just the NUL = empty
+        // command). The reader should bail rather than returning
+        // an Archive whose run_after_command is meaningless.
+        let mut a = Archive::new(Algorithm::Stored, TargetTier::I8086);
+        a.flags = flags::REPRODUCIBLE;
+        let file = build_stored_entry("A.TXT", 0x20, 0, b"x", STORED_TEST_CHUNK).unwrap();
+        a.files = vec![file];
+        a.set_run_after("RUN.BAT").unwrap();
+        let mut buf = Vec::new();
+        a.write(&mut buf).unwrap();
+
+        // `Archive::write` computes the run_after_offset locally and
+        // writes it into the header without back-populating the field
+        // on `self`, so read it back from bytes 19-20 of the buffer.
+        let off = u16::from_le_bytes([buf[19], buf[20]]) as usize;
+        // Truncate everything from the command onward and write a
+        // single NUL — that's the "empty command" case we want to
+        // confirm the parser rejects.
+        buf.truncate(off);
+        buf.push(0);
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(
+            matches!(err, ArchiveError::RunAfterEmpty),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn run_after_inconsistent_flag_vs_offset_rejected_on_read() {
+        // Hand-craft: flag set but offset 0. Should fail at read().
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"DKCH");
+        buf.push(1); // version
+        buf.push(0); // algorithm = stored
+        buf.push(0); // target = 8086
+        buf.extend_from_slice(&flags::RUN_AFTER.to_le_bytes()); // flags
+        buf.extend_from_slice(&0u16.to_le_bytes()); // file_count
+        buf.extend_from_slice(&0u32.to_le_bytes()); // total_u
+        buf.extend_from_slice(&0u32.to_le_bytes()); // total_c
+        buf.extend_from_slice(&0u16.to_le_bytes()); // run_after_offset = 0
+        let crc = crc32fast::hash(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        let mut r = std::io::Cursor::new(&buf);
+        let err = Archive::read(&mut r).unwrap_err();
+        assert!(
+            matches!(err, ArchiveError::RunAfterInconsistent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

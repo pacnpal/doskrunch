@@ -287,17 +287,14 @@ fn chunk_size_above_stub_budget_for_aplib_is_rejected() {
 }
 
 #[test]
-fn deferred_algorithm_takes_precedence_over_chunk_size_validation() {
-    // The CLI's `Lzsa2 => None` branch deliberately skips chunk-size
-    // validation so `--algo lzsa2 --chunk-size 99999` surfaces the
-    // more useful "lzsa2 lands in phase 6" message instead of a generic
-    // chunk-size error. Without this gate, a refactor of `max_chunk`
-    // could re-introduce the chunk-size error precedence regression
-    // silently.
-    //
-    // Phase 5 flipped LZMA from deferred to shipped, so the LZMA half
-    // of this gate now lives in `lzma_target_validation_*` below. Only
-    // lzsa2 still takes the deferred-algo path today.
+fn lzsa2_chunk_size_above_ceiling_is_rejected() {
+    // Phase 6 ships LZSA2 with its own chunk-size ceiling
+    // (LZSA2_CHUNK_INPUT). The prior `deferred_algorithm_takes_
+    // precedence_over_chunk_size_validation` gate covered the case
+    // where lzsa2 was deferred; with all four algorithms shipped
+    // there's no more deferred-precedence logic to gate. This test
+    // is its replacement: prove the LZSA2 chunk-size validation
+    // works end-to-end through the CLI.
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("a.bin");
     std::fs::write(&src, b"x").unwrap();
@@ -313,15 +310,67 @@ fn deferred_algorithm_takes_precedence_over_chunk_size_validation() {
         "99999",
     ]);
     let out = pack.output().unwrap();
-    assert!(!out.status.success(), "lzsa2 should bail");
+    assert!(!out.status.success(), "lzsa2 with oversize chunk_size should bail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("lzsa2") && stderr.contains("phase 6"),
-        "expected phase-6 lzsa2 message, got: {stderr}"
+        stderr.contains("chunk-size") || stderr.contains("chunk_size"),
+        "expected chunk-size error, got: {stderr}"
     );
+}
+
+#[test]
+fn run_after_roundtrips_through_pack_and_inspect() {
+    // Pack with --run-after, then run `inspect` and confirm the
+    // command + flag both show up. End-to-end exercise of the host
+    // pack -> archive serialization -> read -> inspect chain.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.bin");
+    std::fs::write(&src, b"hello run-after").unwrap();
+    let exe = tmp.path().join("o.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack")
+        .arg(&exe)
+        .arg(&src)
+        .args(["--algo", "aplib", "--target", "8086", "--run-after", "MY.EXE /Q"]);
+    let out = pack.output().unwrap();
     assert!(
-        !stderr.contains("chunk-size") && !stderr.contains("chunk_size"),
-        "chunk-size validation should be deferred, got: {stderr}"
+        out.status.success(),
+        "pack with --run-after failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let mut inspect = doskrunch();
+    inspect.arg("inspect").arg(&exe);
+    let out = inspect.output().unwrap();
+    assert!(out.status.success(), "inspect failed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("run-after") && stdout.contains("MY.EXE /Q"),
+        "inspect output missing run-after info: {stdout}"
+    );
+}
+
+#[test]
+fn run_after_rejects_invalid_input_at_the_cli_layer() {
+    // Non-printable byte inside the command -> bail at pack time
+    // with a clear error. Mirrors archive::set_run_after's
+    // validation; this test gates the host all the way through the
+    // CLI layer.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.bin");
+    std::fs::write(&src, b"x").unwrap();
+    let exe = tmp.path().join("o.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack")
+        .arg(&exe)
+        .arg(&src)
+        .args(["--algo", "aplib", "--target", "8086", "--run-after", "BAD\tCMD"]);
+    let out = pack.output().unwrap();
+    assert!(!out.status.success(), "pack should reject tab in --run-after");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("run-after"),
+        "expected run-after error, got: {stderr}"
     );
 }
 

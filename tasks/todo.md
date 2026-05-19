@@ -446,3 +446,162 @@ ships per-tier LZMA blobs at 386 through p3.
   the dict.
 
 ## Phase 6: LZSA2 + polish + release
+
+Phase 6 is the v1 ship phase: LZSA2 as the third algorithm (universal,
+8086+), polish on the `inspect` subcommand, README rewrite, and a
+GitHub Releases workflow for five host platforms. The run-after-extract
+piece is wired host-side; the stub-side INT 21h/4Bh EXEC lands once a
+Docker rebuild path is clear (the local containerd cache hit an I/O
+error mid-phase; CI's build-stubs.yml is the fallback).
+
+- [x] Vendor lzsa 15ee2dfe under `vendor/lzsa/` via `git subtree add
+      --squash`. License is zlib (with `src/matchfinder.c` under CC0),
+      both MIT-compatible.
+- [x] host/build.rs compiles lzsa as a third cc-rs static lib
+      alongside apultra and xz-embedded. Files mirror lzsa's Makefile
+      LIBOBJS minus the CLI front-end (`src/lzsa.c`) and the stream
+      I/O wrappers; doskrunch only uses the in-memory API
+      (`shrink_inmem.c` / `expand_inmem.c`) with
+      `LZSA_FLAG_RAW_BLOCK`.
+- [x] host/src/compress/lzsa2.rs — Rust binding over two narrow
+      `extern "C"` calls: `lzsa_compress_inmem` (raw block, format
+      v2, min match 2, favor ratio) and `lzsa_decompress_inmem` (raw
+      block, format v2). Six unit tests: empty / short / multi-byte
+      / zero / repetitive round-trips, size-mismatch detection,
+      deterministic encoding.
+- [x] archive::build_lzsa2_entry parallel to build_aplib_entry /
+      build_lzma_entry. `LZSA2_CHUNK_INPUT = 16 KiB` matches aPLib so
+      the chunk count stays algorithm-independent at the same
+      `--chunk-size`; `LZSA2_MAX_COMPRESSED_CHUNK = 17 KiB` covers
+      LZSA2's worst-case expansion plus the small block header. Four
+      archive roundtrip tests in `archive::tests`.
+- [x] pack.rs: `Algorithm::Lzsa2` flows through to build_lzsa2_entry
+      on every tier (no target restrictions). chunk_size validation
+      grows an LZSA2 arm bounded by `LZSA2_CHUNK_INPUT`.
+- [x] unpack.rs: `Algorithm::Lzsa2` decodes via
+      `compress::lzsa2::decompress`. Host pack-then-unpack parity
+      tests cover stored / aplib / lzma / lzsa2 end-to-end.
+- [x] main.rs: list-algos flips `lzsa2` from "planned (phase 6)" to
+      "shipped". Pack help-text triple-slash comment describes all
+      four algorithms honestly. The "deferred algorithm takes
+      precedence" CLI arm collapses since every algorithm is shipped;
+      the test that gated it (`deferred_algorithm_takes_precedence_…`)
+      becomes `lzsa2_chunk_size_above_ceiling_is_rejected` to keep
+      the chunk-size validation path covered.
+- [x] stubs/src/lzsa2_depack_16.asm — port of lzsa's
+      `asm/8088/decompress_small_v2.S` (Marty's 8088 small-size
+      decoder + Trixter tuning). cpu 8086 / bits 16. Same Watcom
+      small-model regparm ABI as aplib_depack; save/restore ES + BP;
+      labels prefixed `l2_` for OMF visibility.
+- [x] stubs/src/lzsa2_depack_32.asm — port of lzsa's
+      `asm/x86/decompress_small_v2.asm` (32-bit size-opt decoder).
+      bits 16 + cpu 386 with NASM's auto-emitted 0x66 / 0x67
+      prefixes; mirrors aplib_depack_32.asm's adaptations.
+- [x] stubs/src/stub.c grows an algo == 2 branch alongside stored
+      (algo 0) and aplib (algo 1). LZSA2 reuses `g_src` and `g_buf`
+      so no additional BSS is consumed — LZSA2's per-chunk
+      compressed cap (17 KiB) fits in `APLIB_SRC_SIZE` (18464 B) and
+      its uncompressed cap (16 KiB) equals `BUF_SIZE`. The algo gate
+      moves from `algo > 1` to `algo > 2`; LZMA (algo == 3) still
+      lives in the separate stub_lzma.c blob.
+- [x] stubs/Makefile builds the two new NASM .obj files and links
+      the matching one (16 for 8086/286, 32 for 386+) into every
+      aplib_<tier>.bin. Stub blob count stays at 14.
+- [x] inspect.rs: per-file `chunk` column. Catches multi-chunk
+      decoder regressions and visualizes how a payload was split.
+- [x] README.md (new file). Quick-start, algorithm × target matrix,
+      recommended defaults, subcommand reference, build-from-source
+      steps, and a Limitations section listing the three Phase 5 / 6
+      deferred items. No duplication of PLAN.md content.
+- [x] .github/workflows/release.yml — 5-way native matrix building
+      doskrunch for linux-x86_64 / linux-aarch64 / macos-x86_64 /
+      macos-aarch64 / windows-x86_64. Triggered on `v*` tag push;
+      workflow_dispatch dry-runs the matrix without publishing.
+      Per-job `permissions: contents: read`, scoped `contents: write`
+      on the publish step. softprops/action-gh-release pinned by SHA.
+- [x] host/tests/dosbox_lzsa2_all_tiers.rs — fixture-set extraction
+      at every shipped tier (all 8). Parallel to
+      dosbox_aplib_new_tiers.rs / dosbox_lzma_all_tiers.rs.
+- [x] host/tests/dosbox_lzsa2_large.rs — 500 KiB multi-chunk LZSA2
+      payload at every tier. Parallel to dosbox_aplib_large.rs and
+      dosbox_lzma_large.rs.
+
+**Pending blocker (CI-resolvable)**
+
+- Stub blob rebuild. The local containerd cache hit an I/O error
+  mid-phase (`docker images` fails with a corrupt-blob message).
+  CI's `build-stubs.yml` mounts the project root + invokes `make
+  all`, which rebuilds the 14 blobs and uploads the artifact. The
+  drift check will then surface the new blob bytes to be committed.
+  The two LZSA2 DOSBox-X gates above are written but won't pass
+  against the older committed blobs — they need the new blobs to
+  land first.
+
+**Run-after-extract: host-side shipped, stub-side deferred to v1.1**
+
+- [x] CLI: `--run-after <command>` on `doskrunch pack`. Accepts
+      a NUL-terminated printable-ASCII string up to 127 bytes (the
+      stub's `RUN_AFTER_BUF` cap minus the NUL). Validates via
+      `Archive::set_run_after`, which flips `flags::RUN_AFTER` and
+      stores the command bytes for serialization.
+- [x] Archive: `Archive::write` computes `run_after_offset` (header
+      size + per-file records) and emits the command bytes after the
+      file records. `Archive::read` parses them back and rejects
+      inconsistent flag/offset combinations. Four roundtrip tests:
+      offset round-trip, set_run_after validation, no-run-after
+      keeps offset zero, flag-vs-offset consistency at read time.
+- [x] CLI test coverage: roundtrip pack -> inspect verifies the
+      command + flag both appear; invalid-input test confirms the
+      CLI bails on non-printable bytes in the command.
+- [x] inspect: prints the run-after command line + archive offset
+      when the flag is set.
+- [x] Stub.c / stub_lzma.c: read the run_after_offset from the
+      header and reserve `RUN_AFTER_BUF = 128` bytes of BSS for the
+      command. The fields are read-and-ignore (`(void)flags;` etc.)
+      pending the v1.1 EXEC wiring.
+- [ ] **Deferred: stub-side INT 21h/4Bh EXEC.** Watcom's
+      `system(g_run_after)` is the obvious wrapper but adds
+      ~4.5 KiB of COMMAND.COM lookup + spawn machinery, which
+      pushes the 8086 blob from 6746 to 11234 bytes (past its 8 KiB
+      hard ceiling). The cheaper path is a hand-rolled inline-asm
+      wrapper around INT 21h/4Bh (parameter block + counted command
+      line + child FCB / SS:SP handling) but needs careful real-DOS
+      edge-case testing for error paths, errorlevel propagation, and
+      child-PSP setup. Left for v1.1; the archive format is stable
+      so a v1.1 stub can pick up SFXs packed today.
+
+**Phase 6 verify**
+
+- [x] `cargo test --workspace` green: 87 unit + 14 roundtrip + 3
+      aplib_roundtrip (was 73/12/3 at the end of Phase 5). The +14
+      unit tests are the LZSA2 codec (6), archive LZSA2 builder (4),
+      and archive run-after roundtrip / validation (4). The +2
+      roundtrip tests are the LZSA2 chunk-size CLI gate and the
+      run-after-via-CLI roundtrip.
+- [ ] `SDL_VIDEODRIVER=dummy cargo test --workspace -- --ignored`
+      green across the now 17 ignored DOSBox-X gates (was 15 in
+      Phase 5: the 15 existing gates plus dosbox_lzsa2_all_tiers and
+      dosbox_lzsa2_large). Pending stub blob rebuild.
+- [x] PLAN.md §4 universality: LZSA2 packs at every tier from 8086
+      through p3. Host-side roundtrip confirms; DOSBox-X gates
+      pending blob rebuild.
+- [ ] PLAN.md §10 Phase 6 "LZSA2 faster than aPLib on 8086" speed
+      gate. Pending blob rebuild; the same noisy-DOSBox-X-substrate
+      concern Phase 3's perf row and Phase 5's MMX gate raise
+      probably applies — if the gate doesn't measure cleanly, it
+      stays open with a documented rationale.
+- [x] Stub blob count stays at 14 (8 unified aplib/stored/lzsa2 +
+      6 LZMA-only). LZSA2 doesn't fragment into its own blobs the
+      way LZMA had to.
+- [x] PLAN.md §11 v1 done-criteria items addressed: README is real,
+      reproducible builds, single static binary, release workflow
+      produces all five host-platform binaries. Run-after-extract
+      and the speed gate are the remaining v1 items pending the
+      Docker-blocker and a measurement question respectively.
+
+**Not done in Phase 6 (deferred deliberately)**
+
+- SSE depacker variant for p3 (carry-forward from Phase 5).
+- MMX-vs-pentium aplib speed gate (carry-forward from Phase 5).
+- LZMA-vs-aPLib decompression-time gate (carry-forward from Phase 5).
+- Phase 3 perf-gate row (carry-forward from Phase 3 / 4 / 5).
