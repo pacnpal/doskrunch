@@ -236,8 +236,11 @@ int main(int argc, char **argv)
      * out-of-tree producer mis-targeted the archive. */
     if (algo != 3) die("lzma stub: not an lzma archive");
     flags = rd_u16(hdr + 7);
-    run_after_offset = rd_u16(hdr + 15);
     file_count = rd_u16(hdr + 9);
+    /* Header layout (must match host/src/archive.rs): bytes 11-14
+     * total_uncompressed, 15-18 total_compressed, 19-20
+     * run_after_offset. Mirrors the same fix applied to stub.c. */
+    run_after_offset = rd_u16(hdr + 19);
 
     xz_crc32_init();
     /* XZ_SINGLE: the output buffer IS the dictionary; no separate

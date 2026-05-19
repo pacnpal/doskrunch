@@ -50,10 +50,13 @@ typedef unsigned long  u32;
 static u8  g_src[APLIB_SRC_SIZE];
 static u8  g_buf[BUF_SIZE];
 
-/* Run-after-extract command buffer (Phase 6). Matches
- * host/src/archive.rs::RUN_AFTER_MAX_LEN. The stub reads up to this
- * many bytes from the archive at run_after_offset and passes them to
- * system() once extraction completes. */
+/* Run-after-extract command buffer (Phase 6, host-side only today).
+ * Matches host/src/archive.rs::RUN_AFTER_MAX_LEN. The BSS slot
+ * reserves the space; the actual reading-and-EXEC is deferred to
+ * v1.1 — see the longer note at the bottom of main() for why
+ * Watcom's system() blew the 8086 stub-size budget. The v1.1 stub
+ * revision will use this buffer without changing the archive
+ * format. */
 #define RUN_AFTER_BUF 128u
 static char g_run_after[RUN_AFTER_BUF];
 
@@ -290,8 +293,13 @@ int main(int argc, char **argv)
      * algo == 3 here means a stub-vs-archive mismatch. */
     if (algo > 2) die("bad algo");
     flags = rd_u16(hdr + 7);
-    run_after_offset = rd_u16(hdr + 15);
     file_count = rd_u16(hdr + 9);
+    /* Header layout (must match host/src/archive.rs): bytes 11-14 are
+     * total_uncompressed, 15-18 are total_compressed, 19-20 are the
+     * run_after_offset u16. The previous revision read offset 15 by
+     * mistake, which would have picked up the low half of
+     * total_compressed when the v1.1 stub starts honoring this. */
+    run_after_offset = rd_u16(hdr + 19);
 
     for (i = 0; i < file_count; i++) {
         u8  name_len_b;

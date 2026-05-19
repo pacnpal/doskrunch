@@ -59,9 +59,11 @@ enum Cmd {
         /// Optional command line invoked via INT 21h/4Bh after the
         /// SFX finishes extracting. Plain DOS argv: 8.3 program name
         /// optionally followed by a space and args (e.g.
-        /// `"SETUP.EXE /Q"`). The program has to be one of the
-        /// extracted files. Capped at 127 printable-ASCII bytes
-        /// (matches the stub's RUN_AFTER_BUF cap).
+        /// `"SETUP.EXE /Q"`). Typically the program is one of the
+        /// extracted files; pack doesn't enforce that, since DOS
+        /// resolves the name at extract time against the current
+        /// directory and PATH. Capped at 127 printable-ASCII bytes
+        /// (the stub's RUN_AFTER_BUF cap).
         #[arg(long)]
         run_after: Option<String>,
     },

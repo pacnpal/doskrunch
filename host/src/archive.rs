@@ -254,78 +254,98 @@ impl Archive {
     }
 
     pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        // Compute run_after_offset before serializing the header — it's
-        // the byte offset (from the archive start) where the run-after
-        // command string lands. Header is 25 bytes (4 magic + 17 fields
-        // + 4 CRC); the per-file records contribute `serialized_file_size`
-        // bytes each; the command begins right after them. If no
-        // run-after is set the offset stays 0 to match the empty-flag
-        // default.
-        let archive_for_header = if let Some(ref cmd) = self.run_after_command {
-            let header_size: u32 = 25;
-            let files_size: u32 = self
-                .files
-                .iter()
-                .map(serialized_file_size)
-                .try_fold(0u32, u32::checked_add)
-                .ok_or_else(|| {
+        // Compute the on-disk flags + run_after_offset before
+        // serializing. Header is 25 bytes (4 magic + 17 fields + 4
+        // CRC); per-file records each contribute `serialized_file_size`
+        // bytes; the run-after command, when present, begins right
+        // after them.
+        //
+        // The Copilot-flagged prior version cloned `self` (and with it
+        // every per-chunk compressed Vec<u8>) just to override two
+        // u16 fields before encoding the header. That doubled peak
+        // memory for the duration of the write; route the overrides
+        // through encode_header_with directly instead.
+        let (effective_flags, run_after_offset) = match &self.run_after_command {
+            Some(cmd) => {
+                if cmd.len() > RUN_AFTER_MAX_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "run-after: command bytes {} exceed RUN_AFTER_MAX_LEN ({})",
+                            cmd.len(),
+                            RUN_AFTER_MAX_LEN
+                        ),
+                    ));
+                }
+                let header_size: u32 = 25;
+                let files_size: u32 = self
+                    .files
+                    .iter()
+                    .map(serialized_file_size)
+                    .try_fold(0u32, |acc, v| {
+                        v.and_then(|v| acc.checked_add(v))
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "run-after: cumulative file records exceed u32",
+                        )
+                    })?;
+                let offset = header_size.checked_add(files_size).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "run-after: cumulative file records exceed u32",
+                        "run-after: offset would overflow u32",
                     )
                 })?;
-            let offset = header_size.checked_add(files_size).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "run-after: offset would overflow u32",
-                )
-            })?;
-            let offset_u16: u16 = offset.try_into().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "run-after: archive too large to address the command via the u16 \
-                     run_after_offset field",
-                )
-            })?;
-            // Sanity-check the command length against the documented cap
-            // so the header offset always points at a valid command.
-            if cmd.len() > RUN_AFTER_MAX_LEN {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "run-after: command bytes {} exceed RUN_AFTER_MAX_LEN ({})",
-                        cmd.len(),
-                        RUN_AFTER_MAX_LEN
-                    ),
-                ));
+                let offset_u16: u16 = offset.try_into().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        // The u16 ceiling caps the run-after-addressable
+                        // archive size at ~64 KiB of header + file
+                        // records (the chunk *data* itself is what
+                        // bloats archives past this; payloads with
+                        // little compressible data hit it sooner).
+                        // Refuse rather than silently truncating.
+                        format!(
+                            "run-after: cumulative archive prefix ({offset} bytes) \
+                             exceeds the {} byte u16 run_after_offset ceiling — \
+                             too many or too-large file entries to address the \
+                             command via the on-disk u16 offset",
+                            u16::MAX
+                        ),
+                    )
+                })?;
+                // Be defensive: if the caller forgot to set the flag,
+                // honour the presence of the command and set it now.
+                (self.flags | flags::RUN_AFTER, offset_u16)
             }
-            let mut a = self.clone();
-            a.run_after_offset = offset_u16;
-            // Be defensive: if the caller forgot to set the flag,
-            // honour the presence of the command and set it now.
-            a.flags |= flags::RUN_AFTER;
-            a
-        } else {
-            // No command. Zero the offset and clear the flag in case
-            // the caller left it set in an inconsistent state.
-            let mut a = self.clone();
-            a.run_after_offset = 0;
-            a.flags &= !flags::RUN_AFTER;
-            a
+            None => {
+                // No command. Zero the offset and clear the flag in
+                // case the caller left it set inconsistently.
+                (self.flags & !flags::RUN_AFTER, 0)
+            }
         };
 
-        let header = archive_for_header.encode_header();
+        let header = self.encode_header_with(effective_flags, run_after_offset);
         w.write_all(&header)?;
-        for f in &archive_for_header.files {
+        for f in &self.files {
             write_file(w, f)?;
         }
-        if let Some(ref cmd) = archive_for_header.run_after_command {
-            w.write_all(cmd)?;
+        if let Some(ref cmd) = self.run_after_command {
+            // The run-after flag we computed above implies cmd is
+            // Some; only write the bytes when that flag is set so a
+            // caller that set `run_after_command` without
+            // RUN_AFTER-compatible bytes still serializes a valid
+            // archive (the None arm above clears the flag in that
+            // case).
+            if effective_flags & flags::RUN_AFTER != 0 {
+                w.write_all(cmd)?;
+            }
         }
         Ok(())
     }
 
-    fn encode_header(&self) -> Vec<u8> {
+    fn encode_header_with(&self, flags: u16, run_after_offset: u16) -> Vec<u8> {
         let (total_u, total_c) = self.totals();
         let file_count: u16 = self
             .files
@@ -337,11 +357,11 @@ impl Archive {
         h.push(self.version);
         h.push(self.algorithm as u8);
         h.push(self.target as u8);
-        h.extend_from_slice(&self.flags.to_le_bytes());
+        h.extend_from_slice(&flags.to_le_bytes());
         h.extend_from_slice(&file_count.to_le_bytes());
         h.extend_from_slice(&total_u.to_le_bytes());
         h.extend_from_slice(&total_c.to_le_bytes());
-        h.extend_from_slice(&self.run_after_offset.to_le_bytes());
+        h.extend_from_slice(&run_after_offset.to_le_bytes());
         let crc = crc32fast::hash(&h);
         h.extend_from_slice(&crc.to_le_bytes());
         h
@@ -412,6 +432,30 @@ impl Archive {
                 offset: run_after_offset,
             });
         } else if has_flag {
+            // Verify the declared offset matches where the reader
+            // actually is after the per-file records. The reader's
+            // R: Read trait doesn't expose the stream position, so
+            // reconstruct it the same way Archive::write computes it:
+            // 25-byte header + sum(serialized_file_size). A hostile
+            // archive that lies about run_after_offset would still
+            // round-trip on the host (the loop below just reads from
+            // wherever the cursor is), but the stub seeks to the
+            // header's offset — so a mismatch lets a producer point
+            // the stub at different bytes than the host sees in
+            // `inspect`. Reject before the divergence matters.
+            let expected_offset: u32 = self_consistency_check_offset(25, &files)?;
+            let expected_u16: u16 = expected_offset.try_into().map_err(|_| {
+                ArchiveError::RunAfterInconsistent {
+                    flag_set: has_flag,
+                    offset: run_after_offset,
+                }
+            })?;
+            if expected_u16 != run_after_offset {
+                return Err(ArchiveError::RunAfterOffsetMismatch {
+                    declared: run_after_offset,
+                    expected: expected_u16,
+                });
+            }
             let mut buf = Vec::with_capacity(64);
             loop {
                 if buf.len() >= RUN_AFTER_MAX_LEN {
@@ -453,21 +497,45 @@ impl Archive {
     }
 }
 
+/// Sum `header_size + sum(serialized_file_size(f))` for use as the
+/// expected `run_after_offset`. Same accounting `Archive::write` does
+/// when serializing; `Archive::read` calls this to verify the stub
+/// will seek to the same bytes the host parsed.
+fn self_consistency_check_offset(
+    header_size: u32,
+    files: &[FileEntry],
+) -> Result<u32, ArchiveError> {
+    let mut total: u32 = header_size;
+    for f in files {
+        let s = serialized_file_size(f).ok_or(ArchiveError::SizeOverflow)?;
+        total = total.checked_add(s).ok_or(ArchiveError::SizeOverflow)?;
+    }
+    Ok(total)
+}
+
 /// Number of bytes a file entry takes on disk. Used by `Archive::write`
 /// to compute the run-after-command offset before serialization.
 /// Mirrors `write_file`'s output: 1-byte name length, name bytes,
 /// 1-byte attrs, 4-byte timestamp, 4-byte uncompressed size, 2-byte
 /// chunk count, per chunk (4-byte header + compressed bytes), 4-byte
 /// CRC32.
-fn serialized_file_size(f: &FileEntry) -> u32 {
-    let mut size: u32 = 1 + f.name.len() as u32 + 1 + 4 + 4 + 2 + 4;
+///
+/// Returns `None` on overflow rather than saturating — a saturating
+/// sum would silently clamp at u32::MAX and let `Archive::write`
+/// emit an invalid run_after_offset for a pathologically large
+/// archive. The caller's try_fold turns the None into a
+/// "cumulative file records exceed u32" error.
+fn serialized_file_size(f: &FileEntry) -> Option<u32> {
+    let mut size: u32 = 1u32
+        .checked_add(u32::try_from(f.name.len()).ok()?)?
+        .checked_add(1 + 4 + 4 + 2 + 4)?;
     for c in &f.chunks {
         // 4 bytes of per-chunk header (csize + usize) plus the data.
         size = size
-            .saturating_add(4)
-            .saturating_add(c.data.len() as u32);
+            .checked_add(4)?
+            .checked_add(u32::try_from(c.data.len()).ok()?)?;
     }
-    size
+    Some(size)
 }
 
 fn write_file<W: Write>(w: &mut W, f: &FileEntry) -> io::Result<()> {
@@ -1081,6 +1149,10 @@ pub enum ArchiveError {
         flag_set: bool,
         offset: u16,
     },
+    RunAfterOffsetMismatch {
+        declared: u16,
+        expected: u16,
+    },
 }
 
 impl std::fmt::Display for ArchiveError {
@@ -1162,6 +1234,12 @@ impl std::fmt::Display for ArchiveError {
             Self::RunAfterInconsistent { flag_set, offset } => write!(
                 f,
                 "run-after flag={flag_set} but offset={offset:#06x} — both must be set together or both clear"
+            ),
+            Self::RunAfterOffsetMismatch { declared, expected } => write!(
+                f,
+                "run-after offset mismatch: header declares {declared} but the per-file records \
+                 actually end at {expected} — the stub would seek to bytes the host parser didn't \
+                 see"
             ),
         }
     }
