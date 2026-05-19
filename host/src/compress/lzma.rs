@@ -56,8 +56,13 @@ struct XzDecMicrolzma {
     _private: [u8; 0],
 }
 
-/// `enum xz_mode` from `linux/include/linux/xz.h`. Only the two values
-/// MicroLZMA supports are needed here.
+/// `enum xz_mode` from `linux/include/linux/xz.h`. Mirrors the full
+/// upstream enum so `#[repr(C)]` discriminants line up with the C ABI
+/// regardless of which mode the caller selects; today we only ever
+/// pass `Prealloc` (host-side, see `decompress()`) and the stub passes
+/// `Single` (see `stubs/src/stub_lzma.c`). `Dynalloc` is unused here
+/// — kept so a future caller that wants dynamic dictionary growth can
+/// reach for it without rewriting the binding.
 #[repr(C)]
 #[allow(dead_code)]
 enum XzMode {
