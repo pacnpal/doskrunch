@@ -63,14 +63,20 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
     let max_out = unsafe { lzsa_get_max_compressed_size_inmem(data.len()) };
     let mut buf = vec![0u8; max_out];
     // lzsa_compress_inmem takes the input as a `unsigned char *` (not
-    // const) but the implementation never writes to it — confirmed
-    // against `vendor/lzsa/src/shrink_inmem.c` where the buffer is
-    // only read by the suffix-array build + range coder. Cast away
-    // const to skip the per-chunk allocation a `to_vec()` would
-    // require. If upstream ever flips to actually writing the input,
-    // this would corrupt the caller's slice; pin upstream by SHA
-    // (already documented in CLAUDE.md) and re-audit on a subtree
-    // pull.
+    // const) but the implementation never writes to it UNDER THE
+    // FLAGS WE PASS — confirmed against `vendor/lzsa/src/shrink_inmem.c`
+    // and the compressor's downstream calls, where the buffer is only
+    // read by the suffix-array build + range coder for the
+    // LZSA_FLAG_RAW_BLOCK | LZSA_FLAG_FAVOR_RATIO combination we use.
+    // Upstream DOES mutate when `LZSA_FLAG_RAW_BACKWARD` is set (see
+    // `vendor/lzsa/src/expand_context.c::lzsa_decompressor_expand_block`
+    // which reverses the buffer in place); we never set that flag.
+    // Cast away const here to skip the per-chunk allocation a
+    // `to_vec()` would require. If a future change starts passing
+    // RAW_BACKWARD — or if a subtree pull surfaces a new mutation
+    // path under our current flags — this would corrupt the caller's
+    // slice. Pin upstream by SHA (documented in CLAUDE.md) and
+    // re-audit on a subtree pull.
     let written = unsafe {
         lzsa_compress_inmem(
             data.as_ptr() as *mut c_uchar,
@@ -113,8 +119,10 @@ pub fn decompress(compressed: &[u8], expected_size: usize) -> Result<Vec<u8>, St
             expected_size
         ));
     }
-    // Same const-cast rationale as compress(): lzsa_decompress_inmem
-    // doesn't write to its input despite the non-const signature.
+    // Same const-cast rationale as compress() above: under the
+    // LZSA_FLAG_RAW_BLOCK we pass (no RAW_BACKWARD), the decoder
+    // never writes to its input buffer. See the longer comment in
+    // compress() for the RAW_BACKWARD caveat.
     let mut fmt_version: c_int = LZSA_FORMAT_VERSION_V2;
     let produced = unsafe {
         lzsa_decompress_inmem(
