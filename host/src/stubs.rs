@@ -16,12 +16,11 @@
 //!     scalar `rep movsb` for shorter or overlapping matches; EMMS on
 //!     exit so a future x87 user can't see stale MMX tag words).
 //!   * `aplib_p2.bin`          — wcc `-6` + `aplib_depack_mmx.asm`.
-//!   * `aplib_p3.bin`          — wcc `-6` + `aplib_depack_mmx.asm`. An
-//!     SSE-accelerated depacker variant lives in
-//!     `stubs/src/aplib_depack_sse.asm` but is NOT linked in: under
-//!     DOSBox-X 2026.05.02 `cputype=pentium_iii` the MOVUPS-based block
-//!     copy hangs on multi-chunk payloads; left for follow-up. See
-//!     `stubs/blobs/README.md` for the full deferral note.
+//!   * `aplib_p3.bin`          — wcc `-6` + `aplib_depack_sse.asm`
+//!     (SSE MOVUPS 16-byte block copy when match offset and length are
+//!     both >= 16; scalar `rep movsb` fallback otherwise). The depacker
+//!     enables CR4.OSFXSR and clears CR0.EM/TS before using XMM regs so
+//!     it works on strict real-mode SSE implementations.
 //!
 //! Each `aplib_<tier>.bin` is a complete Watcom-built DOS .EXE that
 //! dispatches at runtime on the archive's algorithm byte and handles
