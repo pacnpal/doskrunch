@@ -187,8 +187,10 @@ fn watch_sfx_extract_in_dosbox() {
         fs::write(work_path.join("DKBANNER.TXT"), banner).expect("write banner");
 
         // dosbox.conf with a REAL display (no SDL_VIDEODRIVER=dummy, no
-        // -nogui). The autoexec shows the DOSKrunch banner, runs the SFX,
-        // lists what landed, then PAUSEs so the window stays up to read.
+        // -nogui). The autoexec shows the DOSKrunch banner, runs the SFX
+        // (which prints each extracted file), then PAUSEs. No `dir`: with
+        // cycles=max the whole session is instant, and the extra listing
+        // would scroll the banner off the 25-line screen before the pause.
         let conf_path = work_path.join("dosbox.conf");
         fs::write(
             &conf_path,
@@ -212,8 +214,7 @@ fn watch_sfx_extract_in_dosbox() {
                     "echo   unpacking {algo} archive...\n",
                     "OUT.EXE\n",
                     "echo.\n",
-                    "echo   done -- crunched files now on drive C:\n",
-                    "dir /w\n",
+                    "echo   done -- files extracted to drive C:\n",
                     "echo.\n",
                     "pause\n",
                     "exit\n",
