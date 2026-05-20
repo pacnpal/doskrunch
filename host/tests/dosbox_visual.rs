@@ -214,7 +214,7 @@ fn watch_sfx_extract_in_dosbox() {
                     "echo   unpacking {algo} archive...\n",
                     "OUT.EXE\n",
                     "echo.\n",
-                    "echo   done -- files extracted to drive C:\n",
+                    "echo   done -- files extracted to the C drive\n",
                     "echo.\n",
                     "pause\n",
                     "exit\n",
