@@ -49,10 +49,11 @@ dos     = false
 
 [downloads]
 # How much of the GitHub releases the hub mirrors over plain HTTP at
-# http://www.postbeep.net/downloads/doskrunch/<tag>/<file>. "latest"
-# (the default) hosts the newest release; "full" hosts every release.
-# DOSKrunch ships small single-binary release assets, so either is fine.
-release_policy = "latest"
+# http://www.postbeep.net/downloads/doskrunch/<tag>/<file>. "full" hosts
+# every release, kept indefinitely (the hub re-downloads them each build).
+# That's fine here: DOSKrunch ships small single-binary release assets, so
+# vintage clients can grab any version over plain HTTP.
+release_policy = "full"
 
 [buttons]
 # Path relative to this manifest. The hub fetches button.gif and stores
