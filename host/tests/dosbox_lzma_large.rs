@@ -101,6 +101,7 @@ fn extracts_500kib_lzma_payload_across_lzma_tiers() {
                     "[cpu]\n",
                     "cputype={cputype}\n",
                     "core=normal\n",
+                    "cycles=max\n",
                     "[dosbox]\n",
                     "memsize=4\n",
                     "[sdl]\n",

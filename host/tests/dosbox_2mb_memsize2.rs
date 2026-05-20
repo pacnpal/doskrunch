@@ -136,6 +136,7 @@ fn extracts_2mib_payload_under_memsize2_no_xms_ems() {
                     "[cpu]\n",
                     "cputype={cputype}\n",
                     "core=normal\n",
+                    "cycles=max\n",
                     "[dosbox]\n",
                     "memsize=2\n",
                     "[dos]\n",

@@ -165,8 +165,8 @@ fn watch_sfx_extract_in_dosbox() {
         // Write the banner as a text file and `TYPE` it in DOS, rather than
         // echo it: a file is printed literally, so the figlet logo (which
         // uses | \ /) renders without DOS treating | as a pipe. CRLF line
-        // endings keep DOS `type` happy. DKBANNER.TXT is 8.3-clean and gets
-        // del'd before the `dir` so it doesn't show among the extracted files.
+        // endings keep DOS `type` happy. DKBANNER.TXT is 8.3-clean and is
+        // del'd right after `type` so it isn't left on the extracted drive.
         let banner_raw = format!(
             "{LOGO}\n\n   {version}   -   squeeze it down, run it on real DOS\n   \
              tier {idx} of {total}:   {tier}        algo:   {algo}",
@@ -187,8 +187,10 @@ fn watch_sfx_extract_in_dosbox() {
         fs::write(work_path.join("DKBANNER.TXT"), banner).expect("write banner");
 
         // dosbox.conf with a REAL display (no SDL_VIDEODRIVER=dummy, no
-        // -nogui). The autoexec shows the DOSKrunch banner, runs the SFX,
-        // lists what landed, then PAUSEs so the window stays up to read.
+        // -nogui). The autoexec shows the DOSKrunch banner, runs the SFX
+        // (which prints each extracted file), then PAUSEs. No `dir`: with
+        // cycles=max the whole session is instant, and the extra listing
+        // would scroll the banner off the 25-line screen before the pause.
         let conf_path = work_path.join("dosbox.conf");
         fs::write(
             &conf_path,
@@ -197,6 +199,7 @@ fn watch_sfx_extract_in_dosbox() {
                     "[cpu]\n",
                     "cputype={cputype}\n",
                     "core=normal\n",
+                    "cycles=max\n",
                     "[dosbox]\n",
                     "memsize=4\n",
                     "[sdl]\n",
@@ -211,8 +214,7 @@ fn watch_sfx_extract_in_dosbox() {
                     "echo   unpacking {algo} archive...\n",
                     "OUT.EXE\n",
                     "echo.\n",
-                    "echo   done -- crunched files now on drive C:\n",
-                    "dir /w\n",
+                    "echo   done -- files extracted to the C drive\n",
                     "echo.\n",
                     "pause\n",
                     "exit\n",

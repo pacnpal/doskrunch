@@ -81,6 +81,7 @@ fn extracts_aplib_fixtures_across_new_tiers() {
                     "[cpu]\n",
                     "cputype={cputype}\n",
                     "core=normal\n",
+                    "cycles=max\n",
                     "[dosbox]\n",
                     "memsize=4\n",
                     "[sdl]\n",

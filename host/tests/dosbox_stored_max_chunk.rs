@@ -88,6 +88,7 @@ fn extracts_stored_payload_with_max_chunk_size_under_8086() {
                 "[cpu]\n",
                 "cputype=8086\n",
                 "core=normal\n",
+                "cycles=max\n",
                 "[dosbox]\n",
                 "memsize=4\n",
                 "[sdl]\n",
