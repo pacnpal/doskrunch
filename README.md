@@ -24,9 +24,10 @@ choice.** It runs on *every* DOS machine, from the 1981 IBM PC/8088 right up to
 a Pentium III, and still compresses well. If you're not sure, this is the answer.
 
 Only pick something else for a specific reason — fastest unpacking on a 4.77 MHz
-8088 (`--algo lzsa2`), the smallest possible file on a 386+ (`--algo lzma`), or a
-known newer CPU. See [Which options should I use?](#which-options-should-i-use)
-for the full rundown, and [Install](#install) for per-platform setup.
+8088 (`--algo lzsa2`), the smallest possible file on a 386+ (`--algo lzma`), or
+faster unpacking on a known newer CPU (raise `--target`, e.g. `--target pentium`).
+See [Which options should I use?](#which-options-should-i-use) for the full
+rundown, and [Install](#install) for per-platform setup.
 
 ## Install
 
