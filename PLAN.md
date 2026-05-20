@@ -283,7 +283,7 @@ Testing strategy:
 2. Fuzzing the parser with `cargo-fuzz`.
 3. Round-trip tests: pack, then unpack with the host tool's `unpack` subcommand, verify byte-identical output.
 4. **DOSBox-X headless integration tests**: actually run the SFX inside DOSBox-X in CI on multiple CPU emulation profiles. Capture extracted files via a shared mount, diff against expected. Only way to catch real DOS bugs.
-5. Benchmarks: decompression timing across all tiers, recorded in `tests/benchmarks/results.md`. Isolated decode time uses the INT 1Ah BIOS tick counter inside the guest (one mechanism, works 8086+); host wallclock is captured as a cross-check.
+5. Benchmarks: decompression timing recorded in `tests/benchmarks/results.md`. The harness currently covers the Phase 3 tiers (8086/386/pentium aplib, plus 386/486/pentium lzma for the LZMA-vs-aPLib comparison) — `make bench` builds only those bench blobs. Isolated decode time uses the INT 1Ah BIOS tick counter inside the guest (one mechanism, works 8086+; the bench target extends to other tiers trivially if needed); host wallclock on the shipped SFX is captured as a cross-check.
 6. Manual testing on real hardware. 86Box gives cycle-accurate 8088/8086 emulation. Real iron (e.g., a Pentium III machine) catches things emulators miss.
 
 ## 10. Implementation phases
