@@ -197,6 +197,7 @@ fn watch_sfx_extract_in_dosbox() {
                     "[cpu]\n",
                     "cputype={cputype}\n",
                     "core=normal\n",
+                    "cycles=max\n",
                     "[dosbox]\n",
                     "memsize=4\n",
                     "[sdl]\n",

@@ -50,6 +50,7 @@ fn extracts_aplib_fixtures_under_pentium_cputype() {
                 "[cpu]\n",
                 "cputype=pentium\n",
                 "core=normal\n",
+                "cycles=max\n",
                 "[dosbox]\n",
                 "memsize=4\n",
                 "[sdl]\n",

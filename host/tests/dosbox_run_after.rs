@@ -97,6 +97,7 @@ fn run_after_case(algo: &str, target: &str, cpu_type: &str, run_after_cmd: &str)
                 "[cpu]\n",
                 "cputype={cpu}\n",
                 "core=normal\n",
+                "cycles=max\n",
                 "[dosbox]\n",
                 "memsize=4\n",
                 "[sdl]\n",

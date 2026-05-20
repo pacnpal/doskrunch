@@ -121,6 +121,7 @@ fn extracts_500kib_multichunk_payload_across_tiers() {
                     "[cpu]\n",
                     "cputype={cputype}\n",
                     "core=normal\n",
+                    "cycles=max\n",
                     "[dosbox]\n",
                     "memsize=4\n",
                     "[sdl]\n",

@@ -59,6 +59,7 @@ fn extracts_fixtures_under_8086_cputype() {
                 "[cpu]\n",
                 "cputype=8086\n",
                 "core=normal\n",
+                "cycles=max\n",
                 "[dosbox]\n",
                 "memsize=4\n",
                 "[sdl]\n",

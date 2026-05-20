@@ -54,6 +54,7 @@ fn extracts_aplib_fixtures_under_386_cputype() {
                 "[cpu]\n",
                 "cputype=386\n",
                 "core=normal\n",
+                "cycles=max\n",
                 "[dosbox]\n",
                 "memsize=4\n",
                 "[sdl]\n",

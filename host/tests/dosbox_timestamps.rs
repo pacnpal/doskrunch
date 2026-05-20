@@ -172,6 +172,7 @@ fn write_dosbox_conf(path: &std::path::Path, mount: &std::path::Path) {
                 "[cpu]\n",
                 "cputype=8086\n",
                 "core=normal\n",
+                "cycles=max\n",
                 "[dosbox]\n",
                 "memsize=4\n",
                 "[sdl]\n",
