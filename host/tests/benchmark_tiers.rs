@@ -1,16 +1,18 @@
-//! Phase 3/5 §10 timing harness: measure end-to-end SFX wall-clock for a
-//! 500 KiB synthetic mixed-content payload at each shipped tier under
-//! headless DOSBox-X and regenerate `tests/benchmarks/results.md`.
+//! Phase 3 §10 timing harness: measure per-tier aPLib decode time for a
+//! 500 KiB synthetic mixed-content payload under headless DOSBox-X and
+//! regenerate `tests/benchmarks/results.md`.
 //!
 //! NOT a correctness gate — this file is purely a measurement tool. The
 //! large-payload multi-chunk correctness gate lives in
 //! `host/tests/dosbox_aplib_large.rs` (runs in CI under `--ignored`,
 //! asserts byte-identical extraction at every tier). PLAN.md §10's
-//! 2–4× / 5–10× speedup ratios are tracked separately in
-//! `tests/benchmarks/results.md` and `tasks/todo.md` — see the perf-gate
-//! row in todo.md for the current "not met, awaiting user direction"
-//! state. The harness here reports raw wall-clock; it does not assert
-//! on the ratio so a measurement-substrate miss can't block the PR.
+//! 2–4× / 5–10× speedup ratios are reported in
+//! `tests/benchmarks/results.md` and summarized in `tasks/todo.md`.
+//! The harness here reports both:
+//!   * isolated decode time (`INT 1Ah` BIOS ticks around `aplib_depack`,
+//!     emitted into `DKPERF.BIN` as little-endian `u32` by the bench-only
+//!     stub blob built with `make bench`, swapped onto the archive here), and
+//!   * end-to-end SFX wall-clock.
 //!
 //! Double-gated: `#[ignore]` AND `DOSKRUNCH_RUN_BENCHMARK=1`. CI's
 //! `dosbox-x-integration` job runs `cargo test --workspace -- --ignored`
@@ -35,14 +37,6 @@
 //!     payload).
 //!   * The depacker is a small fraction of the SFX run. Most wall-clock
 //!     time is DOS file I/O through INT 21h.
-//!
-//! Phase 5 MMX speedup gate:
-//!   The `benchmark_mmx_speedup` function below provides RDTSC-based
-//!   decode-only timing for the pentium vs pentium-mmx comparison. It
-//!   requires RDTSC-instrumented bench blobs built with `make bench` in
-//!   the stubs/ directory. If those blobs are absent the test self-
-//!   reports and skips. The blob is also double-gated by the env var.
-//!   See tests/benchmarks/results.md for the gate decision and rationale.
 
 use std::fs;
 use std::path::Path;
@@ -119,6 +113,8 @@ struct TierResult {
     tier: &'static str,
     cputype: &'static str,
     sfx_size: u64,
+    decode_ticks_min: u32,
+    decode_ticks_runs: Vec<u32>,
     wall_clock_min_ms: u128,
     runs: Vec<u128>,
 }
@@ -139,7 +135,7 @@ fn benchmark_tier_decompression() {
     let work = tempfile::tempdir().expect("create tempdir");
     let work_path = work.path();
 
-    // One payload file for all eight tiers — the same input bytes get
+    // One payload file for all three tiers — the same input bytes get
     // packed by each --target to keep the per-tier compressed size
     // comparable. (The bytes are the same; the embedded stub differs.)
     let payload = synthesize_payload();
@@ -149,21 +145,21 @@ fn benchmark_tier_decompression() {
     fs::write(&payload_path, &payload).expect("write payload");
 
     let bin = env!("CARGO_BIN_EXE_doskrunch");
-    // All eight shipped tiers, with their corresponding DOSBox-X cputype values.
-    // Spellings validated against dosbox-x 2026.05.02 (same as the correctness gates).
-    let tiers: &[(&str, &str)] = &[
-        ("8086", "8086"),
-        ("286", "286"),
-        ("386", "386"),
-        ("486", "486"),
-        ("pentium", "pentium"),
-        ("pentium-mmx", "pentium_mmx"),
-        ("p2", "pentium_ii"),
-        ("p3", "pentium_iii"),
+    // (tier, cputype, bench blob). The bench blob is the same tier built
+    // with -DDKRUNCH_BENCH_TICKS (`make bench`); it emits DKPERF.BIN with
+    // the INT 1Ah decode-tick total. We pack with the shipped stub (so the
+    // reported SFX size is the real product size), then swap the bench
+    // blob onto that archive for the timed run — the shipped blobs carry
+    // no instrumentation, so the measurement must come from a bench blob.
+    let tiers: &[(&str, &str, &str)] = &[
+        ("8086", "8086", "aplib_8086_bench.bin"),
+        ("386", "386", "aplib_386_bench.bin"),
+        ("pentium", "pentium", "aplib_pentium_bench.bin"),
     ];
+    let blobs_dir = root.join("stubs").join("blobs");
 
     let mut results: Vec<TierResult> = Vec::new();
-    for (tier, cputype) in tiers {
+    for (tier, cputype, bench_blob_name) in tiers {
         let sfx_path = work_path.join(format!("OUT_{tier}.EXE"));
         let status = Command::new(bin)
             .arg("pack")
@@ -176,14 +172,26 @@ fn benchmark_tier_decompression() {
 
         let sfx_size = fs::metadata(&sfx_path).expect("stat sfx").len();
 
+        // Build the instrumented SFX: the shipped archive bytes on top of
+        // the bench blob (which emits DKPERF.BIN). Requires `make bench`.
+        let bench_blob_path = blobs_dir.join(bench_blob_name);
+        assert!(
+            bench_blob_path.exists(),
+            "bench blob {bench_blob_name} not found — build it first:\n  \
+             docker run --rm -v \"$PWD:/work\" -w /work/stubs doskrunch-watcom make bench"
+        );
+        let bench_sfx_path = work_path.join(format!("BENCH_{tier}.EXE"));
+        build_bench_sfx(&sfx_path, &bench_blob_path, &bench_sfx_path);
+
         // dosbox-x needs the SFX named on an 8.3 path inside the mount.
         // We rename per-run so each tier's run-dir is independent.
         let mut runs_ms: Vec<u128> = Vec::with_capacity(RUNS_PER_TIER);
+        let mut decode_ticks_runs: Vec<u32> = Vec::with_capacity(RUNS_PER_TIER);
         for run in 0..RUNS_PER_TIER {
             let rundir = tempfile::tempdir().expect("rundir");
             let rundir_path = rundir.path();
             let runsfx = rundir_path.join("OUT.EXE");
-            fs::copy(&sfx_path, &runsfx).expect("copy sfx into rundir");
+            fs::copy(&bench_sfx_path, &runsfx).expect("copy sfx into rundir");
 
             let conf_path = rundir_path.join("dosbox.conf");
             fs::write(
@@ -234,6 +242,8 @@ fn benchmark_tier_decompression() {
             );
             let elapsed = started.elapsed().as_millis();
             runs_ms.push(elapsed);
+            let decode_ticks = read_aplib_ticks_file(rundir_path, tier, run);
+            decode_ticks_runs.push(decode_ticks);
 
             // Sanity check: the extracted payload must match the input
             // exactly. We verify on every run so a flaky depacker can't
@@ -245,11 +255,14 @@ fn benchmark_tier_decompression() {
             assert_eq!(body.len(), payload.len(), "size mismatch tier {tier}");
             assert!(body == payload, "byte mismatch tier {tier}");
         }
+        let decode_ticks_min = *decode_ticks_runs.iter().min().unwrap();
         let wall_clock_min_ms = *runs_ms.iter().min().unwrap();
         results.push(TierResult {
             tier,
             cputype,
             sfx_size,
+            decode_ticks_min,
+            decode_ticks_runs,
             wall_clock_min_ms,
             runs: runs_ms,
         });
@@ -261,290 +274,215 @@ fn benchmark_tier_decompression() {
     // not a gate — the byte-identical correctness check lives in
     // dosbox_aplib_large.rs (and runs in CI under --ignored without
     // requiring the env var). The PLAN.md §10 2–4× / 5–10× speedup
-    // expectation is tracked in tasks/todo.md as an unmet perf gate;
-    // this harness doesn't assert it because end-to-end SFX wall-clock
-    // under DOSBox-X cycles=auto isn't a reliable signal for relative
-    // depacker performance (per-cputype emulation cost variance + DOS
-    // startup + INT 21h I/O are all in the path). An assertion here
-    // would either spuriously fail on measurement noise or pass on a
-    // genuinely slow port, neither of which is useful. Closing the
-    // perf gate needs isolated depacker timing (the RDTSC bench blobs
-    // built with `make bench` in stubs/); see benchmark_mmx_speedup
-    // below and tasks/todo.md.
-    let baseline = results[0].wall_clock_min_ms.max(1);
+    // expectation is reported in results.md but this harness still
+    // doesn't assert on the ratio. The numbers are empirical data, not
+    // a deterministic correctness condition.
+    let baseline_ticks = results
+        .iter()
+        .find(|r| r.tier == "8086")
+        .map(|r| r.decode_ticks_min.max(1))
+        .unwrap_or(1);
+    let baseline_wall = results[0].wall_clock_min_ms.max(1);
     for r in &results {
-        let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
+        let decode_ratio = baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64;
+        let wall_ratio = baseline_wall as f64 / r.wall_clock_min_ms.max(1) as f64;
         println!(
-            "tier={tier:12} wall={ms:6} ms  ratio_vs_8086={ratio:.2}x",
+            "tier={tier:8} decode={ticks:6} ticks ({decode_ratio:.2}x)  wall={ms:6} ms ({wall_ratio:.2}x)",
             tier = r.tier,
+            ticks = r.decode_ticks_min,
+            decode_ratio = decode_ratio,
             ms = r.wall_clock_min_ms,
-            ratio = ratio,
+            wall_ratio = wall_ratio,
         );
     }
 }
 
-/// Phase 5 MMX speedup gate: isolated decode-only timing via RDTSC.
-///
-/// Requires bench blobs built with `make bench` in stubs/:
-///   - stubs/blobs/aplib_pentium_bench.bin
-///   - stubs/blobs/aplib_pentium-mmx_bench.bin
-///
-/// These blobs are RDTSC-instrumented (built with -DDKRUNCH_BENCH_RDTSC)
-/// and print "DKBENCH:decode_ticks=N" to stdout after extraction. This
-/// function redirects SFX output via DOS `>` to a file, reads that file,
-/// and parses the DKBENCH line to get decode-only TSC tick counts.
-///
-/// DOSBox-X is configured with cycles=fixed to reduce emulation noise
-/// (cycles=auto varies throughput to match host speed; cycles=fixed gives
-/// a deterministic emulated clock). Tick counts are not converted to wall-
-/// clock seconds — the ratio pentium/pentium-mmx is what matters.
-///
-/// Gate decision: documented in tests/benchmarks/results.md. The gate is
-/// redefined from "≥ 30% speedup" to a realistic ceiling based on aPLib's
-/// bit-at-a-time literal decoder (no MMX-vectorizable literal run opcode;
-/// only match copies with offset ≥ 8 and length ≥ 8 benefit).
-///
-/// If the bench blobs are not present (haven't been built yet), the test
-/// prints a skip message and returns without failing.
+/// Pack `payload_path` with `algo` at `tier`, swap in `bench_blob_name` (an
+/// INT 1Ah-instrumented `make bench` blob), run it under DOSBox-X at
+/// `cputype`, and return the smallest DKPERF.BIN decode-tick count over
+/// RUNS_PER_TIER runs. Shared by `benchmark_lzma_vs_aplib`.
+#[allow(clippy::too_many_arguments)]
+fn measure_decode_ticks(
+    bin: &str,
+    payload_path: &Path,
+    blobs_dir: &Path,
+    work_path: &Path,
+    algo: &str,
+    tier: &str,
+    cputype: &str,
+    bench_blob_name: &str,
+) -> u32 {
+    let sfx_path = work_path.join(format!("OUT_{algo}_{tier}.EXE"));
+    let status = Command::new(bin)
+        .arg("pack")
+        .arg(&sfx_path)
+        .arg(payload_path)
+        .args(["--algo", algo, "--target", tier])
+        .status()
+        .expect("spawn doskrunch pack");
+    assert!(status.success(), "pack failed for {algo}/{tier}");
+
+    let bench_blob_path = blobs_dir.join(bench_blob_name);
+    assert!(
+        bench_blob_path.exists(),
+        "bench blob {bench_blob_name} not found — build it first:\n  \
+         docker run --rm -v \"$PWD:/work\" -w /work/stubs doskrunch-watcom make bench"
+    );
+    let bench_sfx_path = work_path.join(format!("BENCH_{algo}_{tier}.EXE"));
+    build_bench_sfx(&sfx_path, &bench_blob_path, &bench_sfx_path);
+
+    let mut min_ticks = u32::MAX;
+    for run in 0..RUNS_PER_TIER {
+        let rundir = tempfile::tempdir().expect("rundir");
+        let rundir_path = rundir.path();
+        fs::copy(&bench_sfx_path, rundir_path.join("OUT.EXE")).expect("copy sfx into rundir");
+
+        let conf_path = rundir_path.join("dosbox.conf");
+        fs::write(
+            &conf_path,
+            format!(
+                concat!(
+                    "[cpu]\n",
+                    "cputype={cputype}\n",
+                    "core=normal\n",
+                    "cycles=auto\n",
+                    "[dosbox]\n",
+                    "memsize=4\n",
+                    "[sdl]\n",
+                    "output=surface\n",
+                    "[autoexec]\n",
+                    "mount c \"{mount}\"\n",
+                    "c:\n",
+                    "OUT.EXE\n",
+                    "exit\n",
+                ),
+                cputype = cputype,
+                mount = rundir_path.display(),
+            ),
+        )
+        .expect("write dosbox.conf");
+
+        let mut dosbox = Command::new("dosbox-x")
+            .arg("-conf")
+            .arg(&conf_path)
+            .arg("-exit")
+            .arg("-nogui")
+            .env("SDL_VIDEODRIVER", "dummy")
+            .spawn()
+            .expect("spawn dosbox-x");
+        match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
+            Ok(s) => assert!(s.success(), "dosbox-x non-zero ({algo}/{tier} run {run})"),
+            Err(WaitError::Timeout) => panic!("dosbox-x timeout ({algo}/{tier} run {run})"),
+            Err(WaitError::Wait(e)) => panic!("dosbox-x wait error: {e} ({algo}/{tier} run {run})"),
+        }
+
+        let ticks = read_aplib_ticks_file(rundir_path, tier, run);
+        if ticks < min_ticks {
+            min_ticks = ticks;
+        }
+    }
+    min_ticks
+}
+
+/// LZMA-vs-aPLib isolated decode-tick comparison (folded in from the closed
+/// PR #18 / issue #13). For each tier that has both an aplib and an lzma
+/// `make bench` blob (LZMA is 386+), pack the same payload with each algo,
+/// swap in the matching INT 1Ah bench blob, and report the lzma/aplib decode
+/// ratio. PLAN.md §10 frames the gate as "LZMA decode within ~10x aPLib on
+/// the same payload". Measurement only — no assertion (DOSBox-X is a noisy
+/// substrate for absolute timing; see tests/benchmarks/results.md).
 #[test]
 #[ignore = "needs dosbox-x AND DOSKRUNCH_RUN_BENCHMARK=1 AND bench blobs from `make bench`"]
-fn benchmark_mmx_speedup() {
+fn benchmark_lzma_vs_aplib() {
     if std::env::var_os("DOSKRUNCH_RUN_BENCHMARK").is_none() {
-        eprintln!("benchmark_mmx_speedup: skipped (set DOSKRUNCH_RUN_BENCHMARK=1 to run)");
+        eprintln!("benchmark_lzma_vs_aplib: skipped (set DOSKRUNCH_RUN_BENCHMARK=1 to run)");
         return;
     }
 
     let root = repo_root();
+    let work = tempfile::tempdir().expect("create tempdir");
+    let work_path = work.path();
     let blobs_dir = root.join("stubs").join("blobs");
-    let pentium_bench = blobs_dir.join("aplib_pentium_bench.bin");
-    let pmmx_bench = blobs_dir.join("aplib_pentium-mmx_bench.bin");
+    let bin = env!("CARGO_BIN_EXE_doskrunch");
 
-    if !pentium_bench.exists() || !pmmx_bench.exists() {
-        eprintln!(
-            "benchmark_mmx_speedup: bench blobs not found — build them first:\n  \
-             docker run --rm -v \"$PWD/stubs:/work\" -w /work doskrunch-watcom make bench"
-        );
-        return;
-    }
-
-    // Build the 500 KiB benchmark payload.
     let payload = synthesize_payload();
     assert_eq!(payload.len(), PAYLOAD_SIZE);
-    let payload_path = root.join("target").join("bench_mmx_payload.bin");
+    let payload_path = root.join("target").join("bench_payload.bin");
     fs::create_dir_all(payload_path.parent().unwrap()).expect("mkdir target");
     fs::write(&payload_path, &payload).expect("write payload");
 
-    // Bench runs: pentium (scalar rep movsb) then pentium-mmx (MMX MOVQ path).
-    // cycles=fixed 10000 gives a deterministic ~10 MIPS emulated rate — slow
-    // enough that the RDTSC counter accumulates meaningful tick differences
-    // between tiers, but fast enough to complete in under 60 seconds per run.
-    let bench_tiers: &[(&str, &str, &str)] = &[
-        ("pentium", "pentium", "aplib_pentium_bench.bin"),
-        ("pentium-mmx", "pentium_mmx", "aplib_pentium-mmx_bench.bin"),
+    // Only tiers with BOTH a `make bench` aplib and lzma blob (LZMA is 386+).
+    let tiers: &[(&str, &str, &str, &str)] = &[
+        ("386", "386", "aplib_386_bench.bin", "lzma_386_bench.bin"),
+        (
+            "pentium",
+            "pentium",
+            "aplib_pentium_bench.bin",
+            "lzma_pentium_bench.bin",
+        ),
     ];
 
-    let mut decode_ticks: Vec<(&str, u64)> = Vec::new();
-
-    for (tier, cputype, blob_name) in bench_tiers {
-        let blob_path = blobs_dir.join(blob_name);
-
-        // Build the SFX from the bench blob directly: copy the blob, then
-        // append the archive built by `doskrunch pack`. We use the normal
-        // doskrunch pack pipeline to produce a temporary archive-only file,
-        // then strip the stub header and re-attach the bench blob.
-        // Simpler alternative: pack normally (with production stub) but swap
-        // the .exe header for the bench blob before running.
-        // Implemented as: pack to a temp SFX, then overwrite its MZ header
-        // portion with the bench blob, keeping the archive suffix.
-        let bin = env!("CARGO_BIN_EXE_doskrunch");
-        let work = tempfile::tempdir().expect("tempdir");
-        let work_path = work.path();
-
-        let prod_sfx = work_path.join("PROD.EXE");
-        let status = Command::new(bin)
-            .arg("pack")
-            .arg(&prod_sfx)
-            .arg(&payload_path)
-            .args(["--algo", "aplib", "--target", tier])
-            .status()
-            .expect("doskrunch pack");
-        assert!(status.success(), "pack failed for {tier}");
-
-        // The production SFX = prod_stub_blob + archive_bytes + DKTR_trailer.
-        // Swap in the bench blob (same algorithm / tier, different code):
-        // archive starts at offset = production stub size; find it by reading
-        // the DKTR trailer at EOF-8 which stores `archive_off` as u32 LE.
-        let prod_bytes = fs::read(&prod_sfx).expect("read prod sfx");
-        let prod_len = prod_bytes.len();
-        assert!(prod_len >= 8, "sfx too short");
-        let trailer_start = prod_len - 8;
-        assert_eq!(
-            &prod_bytes[trailer_start..trailer_start + 4],
-            b"DKTR",
-            "production SFX trailer magic is not DKTR"
+    println!("\nLZMA vs aPLib decode ticks (INT 1Ah, min of {RUNS_PER_TIER} runs):");
+    for (tier, cputype, aplib_blob, lzma_blob) in tiers {
+        let aplib_ticks = measure_decode_ticks(
+            bin,
+            &payload_path,
+            &blobs_dir,
+            work_path,
+            "aplib",
+            tier,
+            cputype,
+            aplib_blob,
         );
-        let archive_off = u32::from_le_bytes(
-            prod_bytes[trailer_start + 4..trailer_start + 8]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-
-        let bench_blob = fs::read(&blob_path).expect("read bench blob");
-        let bench_blob_len = bench_blob.len();
-        // Build bench SFX = bench_blob + archive_bytes (from archive_off onwards).
-        // The copied tail still ends in the production DKTR trailer, whose
-        // archive_offset points at the *production* stub size. The stub locates
-        // the DKCH archive by reading EOF-8 and seeking to archive_offset, so we
-        // must rewrite that field to bench_blob_len — the archive now starts
-        // immediately after the (different-sized) bench blob.
-        let mut bench_sfx = bench_blob;
-        bench_sfx.extend_from_slice(&prod_bytes[archive_off..]);
-        let bench_len = bench_sfx.len();
-        bench_sfx[bench_len - 4..bench_len]
-            .copy_from_slice(&(bench_blob_len as u32).to_le_bytes());
-
-        // Write the bench SFX.
-        let bench_sfx_path = work_path.join("BENCH.EXE");
-        fs::write(&bench_sfx_path, &bench_sfx).expect("write bench sfx");
-
-        // Run with DOS stdout redirected to DKBENCH.TXT so the host can
-        // read the DKBENCH line after DOSBox exits. The name is a valid 8.3
-        // stem (7 chars + ".TXT"), so DOS writes it verbatim — no 8.3
-        // truncation (BENCH_OUT -> BENCH_OU) or `~1` mangling to chase.
-        let mut min_ticks: u64 = u64::MAX;
-        for run in 0..RUNS_PER_TIER {
-            let rundir = tempfile::tempdir().expect("rundir");
-            let rundir_path = rundir.path();
-            fs::copy(&bench_sfx_path, rundir_path.join("BENCH.EXE")).expect("copy bench sfx");
-
-            let conf_path = rundir_path.join("dosbox.conf");
-            fs::write(
-                &conf_path,
-                format!(
-                    concat!(
-                        "[cpu]\n",
-                        "cputype={cputype}\n",
-                        "core=normal\n",
-                        // cycles=fixed gives a deterministic emulated rate.
-                        // 10000 cycles/s is slow but stable; the relative
-                        // pentium-mmx/pentium ratio is what we care about,
-                        // not the absolute tick count.
-                        "cycles=fixed 10000\n",
-                        "[dosbox]\n",
-                        "memsize=4\n",
-                        "[sdl]\n",
-                        "output=surface\n",
-                        "[autoexec]\n",
-                        "mount c \"{mount}\"\n",
-                        "c:\n",
-                        "BENCH.EXE > DKBENCH.TXT\n",
-                        "exit\n",
-                    ),
-                    cputype = cputype,
-                    mount = rundir_path.display(),
-                ),
-            )
-            .expect("write dosbox.conf");
-
-            let mut dosbox = Command::new("dosbox-x")
-                .arg("-conf")
-                .arg(&conf_path)
-                .arg("-exit")
-                .arg("-nogui")
-                .env("SDL_VIDEODRIVER", "dummy")
-                .spawn()
-                .expect("spawn dosbox-x");
-            match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
-                Ok(s) => assert!(s.success(), "dosbox-x non-zero exit (tier {tier} run {run})"),
-                Err(WaitError::Timeout) => {
-                    panic!("dosbox-x timeout (tier {tier} run {run})")
-                }
-                Err(WaitError::Wait(e)) => {
-                    panic!("dosbox-x wait error: {e} (tier {tier} run {run})")
-                }
-            }
-
-            // Read the bench output file. The redirect target DKBENCH.TXT is
-            // a valid 8.3 name, so DOSBox-X writes it without truncation; the
-            // case-insensitive lookup is enough to find it on any host FS.
-            let bench_out = locate_case_insensitive(rundir_path, "DKBENCH.TXT")
-                .expect("DKBENCH.TXT not found after DOSBox run");
-            let bench_text = fs::read_to_string(&bench_out).expect("read bench output");
-
-            // Parse "DKBENCH:decode_ticks=N"
-            let ticks = bench_text
-                .lines()
-                .find_map(|line| {
-                    let line = line.trim_end_matches('\r').trim();
-                    line.strip_prefix("DKBENCH:decode_ticks=")
-                        .and_then(|s| s.parse::<u64>().ok())
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "DKBENCH line not found in bench output for tier {tier} run {run}:\n{bench_text}"
-                    )
-                });
-
-            println!(
-                "tier={tier:12} run={run} decode_ticks={ticks}",
-                tier = tier,
-                run = run,
-                ticks = ticks,
-            );
-            if ticks < min_ticks {
-                min_ticks = ticks;
-            }
-        }
-        decode_ticks.push((tier, min_ticks));
-    }
-
-    // Report the ratio and verdict.
-    let pentium_ticks = decode_ticks
-        .iter()
-        .find(|(t, _)| *t == "pentium")
-        .map(|(_, v)| *v)
-        .unwrap_or(1);
-    let pmmx_ticks = decode_ticks
-        .iter()
-        .find(|(t, _)| *t == "pentium-mmx")
-        .map(|(_, v)| *v)
-        .unwrap_or(1);
-
-    // Speedup factor: pmmx_ticks < pentium_ticks => ratio > 1 => MMX is faster.
-    let ratio = pentium_ticks as f64 / pmmx_ticks.max(1) as f64;
-    println!("\nMMX gate measurement (RDTSC decode-only ticks, min of {RUNS_PER_TIER} runs):");
-    for (tier, ticks) in &decode_ticks {
-        println!("  tier={tier:12} min_ticks={ticks}");
+        let lzma_ticks = measure_decode_ticks(
+            bin,
+            &payload_path,
+            &blobs_dir,
+            work_path,
+            "lzma",
+            tier,
+            cputype,
+            lzma_blob,
+        );
+        let ratio = lzma_ticks as f64 / aplib_ticks.max(1) as f64;
+        println!(
+            "  tier={tier:8} aplib={aplib_ticks:6} ticks  lzma={lzma_ticks:6} ticks  lzma/aplib={ratio:.2}x",
+        );
     }
     println!(
-        "  pentium-mmx speedup over pentium: {ratio:.3}x  ({pct:.1}% faster)",
-        ratio = ratio,
-        pct = (ratio - 1.0) * 100.0,
+        "  (PLAN.md §10 gate context: LZMA decode within ~10x aPLib on the same payload.)"
     );
-    // The Phase 5 gate was redefined away from the original ">= 30%" target
-    // (see PLAN.md §10 and tests/benchmarks/results.md): aPLib emits literals
-    // one byte at a time (no literal-run opcode to MMX-accelerate), and only
-    // match copies with offset >= 8 AND length >= 8 hit the MOVQ path, so a
-    // typical mixed payload sees single-digit-percent gains. This harness
-    // reports the measured ratio rather than passing/failing a fixed threshold.
-    println!(
-        "  Gate redefined (no fixed threshold): only long matches with offset >= 8\n  \
-         benefit; expected 0–5% on typical payloads. See tests/benchmarks/results.md\n  \
-         for the full rationale."
-    );
-    // Do NOT panic — this is a measurement harness, not a CI correctness gate.
-    // Record the measured ratio; update results.md by hand.
+    // No assertion — measurement harness only; record numbers by hand.
 }
 
 fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     let dest = root.join("tests").join("benchmarks").join("results.md");
     fs::create_dir_all(dest.parent().unwrap()).expect("mkdir benchmarks");
 
-    let baseline = results
+    let baseline_ticks = results
+        .iter()
+        .find(|r| r.tier == "8086")
+        .map(|r| r.decode_ticks_min.max(1))
+        .unwrap_or(1);
+    let baseline_wall = results
         .iter()
         .find(|r| r.tier == "8086")
         .map(|r| r.wall_clock_min_ms.max(1))
         .unwrap_or(1);
+    let ratio_386 = results
+        .iter()
+        .find(|r| r.tier == "386")
+        .map(|r| baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64);
+    let ratio_pentium = results
+        .iter()
+        .find(|r| r.tier == "pentium")
+        .map(|r| baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64);
+    let gate_met = ratio_386
+        .map(|v| (2.0..=4.0).contains(&v))
+        .unwrap_or(false)
+        && ratio_pentium
+            .map(|v| (5.0..=10.0).contains(&v))
+            .unwrap_or(false);
 
     let mut md = String::new();
     md.push_str("# Tier decompression benchmark\n\n");
@@ -554,102 +492,124 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
         payload.len() / 1024,
         payload.len(),
     ));
-    md.push_str(
-        "Measurement: end-to-end SFX wall-clock under headless DOSBox-X with `cycles=auto`, \
-        min across 3 runs per tier. The benchmark is `#[ignore]`-gated AND env-var-gated \
-        (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this \
-        file. Run locally with:\n\n",
-    );
+    md.push_str("Measurement setup:\n\n");
+    md.push_str("* Isolated decode time: a bench-only stub blob (built with `make bench`, never shipped) wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks). The harness swaps this blob onto the packed archive for the timed run, so the shipped stubs carry no instrumentation. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
+    md.push_str("* End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs.\n");
+    md.push_str("* Benchmark gating: `#[ignore]` AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file.\n\n");
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
-    md.push_str("| Tier | cputype | SFX size (bytes) | Wall clock min (ms) | Ratio vs 8086 |\n");
-    md.push_str("|------|---------|------------------|----------------------|----------------|\n");
+    md.push_str("## Isolated aPLib decode time (INT 1Ah ticks)\n\n");
+    md.push_str("| Tier | cputype | SFX size (bytes) | Decode min (ticks) | Decode ratio vs 8086 |\n");
+    md.push_str("|------|---------|------------------|---------------------|----------------------|\n");
     for r in results {
-        let ratio = baseline as f64 / r.wall_clock_min_ms.max(1) as f64;
+        let ratio = baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64;
         md.push_str(&format!(
-            "| {tier} | {cputype} | {sfx} | {ms} | {ratio:.2}× |\n",
+            "| {tier} | {cputype} | {sfx} | {ticks} | {ratio:.2}× |\n",
             tier = r.tier,
             cputype = r.cputype,
             sfx = r.sfx_size,
+            ticks = r.decode_ticks_min,
+            ratio = ratio,
+        ));
+    }
+    md.push_str("\n");
+    if let (Some(r386), Some(rp5)) = (ratio_386, ratio_pentium) {
+        md.push_str(&format!(
+            "* Phase 3 gate check (decode-only): 386/8086 = **{r386:.2}×**, pentium/8086 = **{rp5:.2}×** → **{verdict}**.\n",
+            verdict = if gate_met { "gate met" } else { "gate not met" }
+        ));
+    }
+    md.push_str("\n## End-to-end wall-clock (DOSBox-X cycles=auto)\n\n");
+    md.push_str("| Tier | Wall clock min (ms) | Ratio vs 8086 |\n");
+    md.push_str("|------|----------------------|----------------|\n");
+    for r in results {
+        let ratio = baseline_wall as f64 / r.wall_clock_min_ms.max(1) as f64;
+        md.push_str(&format!(
+            "| {tier} | {ms} | {ratio:.2}× |\n",
+            tier = r.tier,
             ms = r.wall_clock_min_ms,
             ratio = ratio,
         ));
     }
     md.push_str("\n## Per-run detail\n\n");
-    md.push_str("| Tier | Run 1 (ms) | Run 2 (ms) | Run 3 (ms) |\n");
-    md.push_str("|------|------------|------------|------------|\n");
+    md.push_str("| Tier | Decode run 1 (ticks) | Decode run 2 (ticks) | Decode run 3 (ticks) | Wall run 1 (ms) | Wall run 2 (ms) | Wall run 3 (ms) |\n");
+    md.push_str("|------|----------------------|----------------------|----------------------|-----------------|-----------------|-----------------|\n");
     for r in results {
-        let cells: Vec<String> = (0..RUNS_PER_TIER)
+        let decode_cells: Vec<String> = (0..RUNS_PER_TIER)
+            .map(|i| {
+                r.decode_ticks_runs
+                    .get(i)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let wall_cells: Vec<String> = (0..RUNS_PER_TIER)
             .map(|i| r.runs.get(i).map(|v| v.to_string()).unwrap_or_default())
             .collect();
         md.push_str(&format!(
-            "| {tier} | {} |\n",
-            cells.join(" | "),
+            "| {tier} | {} | {} |\n",
+            decode_cells.join(" | "),
+            wall_cells.join(" | "),
             tier = r.tier,
         ));
     }
     md.push_str(
         "\n## Caveats\n\n\
-         * `cycles=auto` is DOSBox-X's heuristic throughput scaler; results vary with host \
-           CPU and DOSBox-X version. Higher-tier CPUs (pentium, pentium-mmx, p2, p3) are more \
-           expensive to emulate per guest instruction, which partially offsets the speed-optimized \
-           depacker's instruction-count win. The emulation cost delta is larger on some hosts \
-           than the actual decode speedup, so wall-clock ratios are not reliable for relative \
-           depacker performance comparisons.\n\
-         * Most wall-clock time is DOS startup overhead and INT 21h file I/O, not the depacker. \
-           The depacker is a small slice of the total run.\n\
-         * PLAN.md §10 Phase 3 Verify explicitly lists \"386 is 2-4x faster than 8086, pentium \
-           is 5-10x faster\" as the expected benchmark outcome — it does not qualify that as \
-           real-hardware-only. The numbers above may miss that gate on DOSBox-X: emulation cost \
-           per cputype and DOS I/O overhead dominate 2-second wall-clock. What we can assert from \
-           this harness is correctness: the DOSBox-X correctness gates extract byte-identical \
-           payloads at every tier. Isolated decode timing requires the RDTSC bench blobs (see \
-           `benchmark_mmx_speedup` in `host/tests/benchmark_tiers.rs`).\n\
-         * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI never \
-           sets `DOSKRUNCH_RUN_BENCHMARK=1`, so its `--ignored` run skips this test via the \
-           env-var check and this file is only regenerated by a local opt-in run. Commit a \
-           refreshed copy when the numbers move.\n\
-         \n\
-         ## Phase 5 MMX speedup gate decision\n\
-         \n\
-         Gate as written (PLAN.md §10 Phase 5 Verify): \"pentium-mmx aplib decompression is at \
-         least 30% faster than pentium aplib on a literal-heavy payload.\"\n\
-         \n\
-         **Gate redefined. Rationale:**\n\
-         \n\
-         aPLib's bit-at-a-time decoder does not expose enough vectorizable surface for a \
-         consistent 30% speedup:\n\
-         \n\
-         1. **Literals** are emitted one byte at a time, gated on bit-decode decisions. There is \
-            no \"literal run of length N\" opcode (unlike LZMA or LZSA2). MOVQ cannot accelerate \
-            the literal path — each literal requires a bit-decode first.\n\
-         2. **Matches** copy `cx` bytes with `a32 rep movsb`. The MMX path (`aplib_depack_mmx.asm`) \
-            replaces this with an 8-byte MOVQ loop, but only when **both** conditions hold: \
-            `offset >= 8` AND `length >= 8`. The `offset >= 8` floor matches the 8-byte MOVQ \
-            stride, so each load reads bytes the previous store already wrote — `length` may \
-            still exceed `offset` (classical LZ77 overlap) and stay safe. Short matches (the \
-            canonical zeros-run case: offset=1, length=1..7) fall through to scalar `rep movsb`.\n\
-         3. **Typical aPLib payload distribution** has a heavy short-match tail. On the 500 KiB \
-            synthetic payload (25% text, 25% zeros, 25% LCG random, 25% repeated 16-byte pattern), \
-            the zeros quarter compresses almost entirely to offset-1 run-length matches — exactly \
-            the case the MMX path skips. The repeated-pattern quarter produces some longer matches \
-            with small offsets (< 8 bytes), also skipping MMX. Only text and pattern sections \
-            with match offsets >= 8 AND lengths >= 8 benefit.\n\
-         4. **Expected realistic speedup**: < 5% end-to-end on the benchmark payload. The MMX \
-            path primarily accelerates memory-bandwidth-bound workloads with large, non-overlapping \
-            copies — a description that fits bulk memcpy, not aPLib's bitstream decoder.\n\
-         \n\
-         **Redefined gate**: the MMX depacker (`aplib_depack_mmx.asm`) is correct and wired in. \
-         It provides a small speedup on match-heavy payloads with long matches whose offset is \
-         also >= 8. The 30% literal-heavy threshold is not achievable because aPLib literals are not run-coded. \
-         The gate is closed as \"infrastructure shipped, unrealistic threshold removed.\"\n\
-         \n\
-         **Decode-only timing methodology**: RDTSC-instrumented bench blobs (`make bench` in \
-         `stubs/`) wrap `aplib_depack` calls with `rdtsc_lo()` reads and print \
-         `DKBENCH:decode_ticks=N` to stdout. Run `benchmark_mmx_speedup` (also in this file) \
-         after building the bench blobs to get isolated decode tick counts with \
-         `cycles=fixed 10000`. Expected result: pentium-mmx speedup over pentium in the range \
-         1.00x–1.05x on the synthetic benchmark payload (consistent with the 0–5% estimate above).\n",
+         * `INT 1Ah` has coarse resolution (~54.9 ms/tick), so small payloads are noisy. \
+           The 500 KiB payload keeps decode long enough to make ratios stable.\n\
+         * `INT 1Ah` wraps at midnight. This harness only times single decode calls that run \
+           for seconds, so unsigned tick-delta arithmetic is safe.\n\
+         * Wall-clock and decode-time are both useful: the decode ratio tracks `aplib_depack` \
+           itself; wall-clock still reflects user-visible elapsed time including DOS startup and \
+           INT 21h file I/O.\n\
+         * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI's \
+           `cargo test --workspace -- --ignored` run skips it via the env-var check, so this \
+           file is only regenerated by a local opt-in run. Commit a refreshed copy when the \
+           numbers move.\n",
     );
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
+}
+
+/// Build an instrumented bench SFX: the shipped archive bytes (read from
+/// `prod_sfx`) appended to `bench_blob`, with the trailing DKTR archive
+/// offset rewritten to the bench blob length. The stub finds the DKCH
+/// archive via EOF-8 -> archive_offset, so after swapping in a different-
+/// sized stub the offset must point at the new (post-blob) archive start.
+fn build_bench_sfx(prod_sfx: &Path, bench_blob: &Path, out: &Path) {
+    let prod = fs::read(prod_sfx).expect("read prod sfx");
+    assert!(prod.len() >= 8, "sfx too short for trailer");
+    let tstart = prod.len() - 8;
+    assert_eq!(
+        &prod[tstart..tstart + 4],
+        b"DKTR",
+        "production SFX trailer magic is not DKTR"
+    );
+    let archive_off =
+        u32::from_le_bytes(prod[tstart + 4..tstart + 8].try_into().unwrap()) as usize;
+
+    let blob = fs::read(bench_blob).expect("read bench blob");
+    let blob_len = blob.len();
+    let mut sfx = blob;
+    sfx.extend_from_slice(&prod[archive_off..]);
+    let n = sfx.len();
+    sfx[n - 4..n].copy_from_slice(&(blob_len as u32).to_le_bytes());
+    fs::write(out, &sfx).expect("write bench sfx");
+}
+
+fn read_aplib_ticks_file(rundir: &Path, tier: &str, run: usize) -> u32 {
+    let perf = locate_case_insensitive(rundir, "DKPERF.BIN")
+        .unwrap_or_else(|| panic!("missing DKPERF.BIN (tier {tier} run {run})"));
+    let bytes = fs::read(&perf).unwrap_or_else(|e| {
+        panic!(
+            "failed to read {} (tier {tier} run {run}): {e}",
+            perf.display()
+        )
+    });
+    if bytes.len() < 4 {
+        panic!(
+            "short DKPERF.BIN ({} bytes) (tier {tier} run {run})",
+            bytes.len()
+        );
+    }
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }

@@ -283,7 +283,7 @@ Testing strategy:
 2. Fuzzing the parser with `cargo-fuzz`.
 3. Round-trip tests: pack, then unpack with the host tool's `unpack` subcommand, verify byte-identical output.
 4. **DOSBox-X headless integration tests**: actually run the SFX inside DOSBox-X in CI on multiple CPU emulation profiles. Capture extracted files via a shared mount, diff against expected. Only way to catch real DOS bugs.
-5. Benchmarks: decompression timing across all tiers, recorded in `tests/benchmarks/results.md`. Use RDTSC inside the guest on Pentium+ tiers, wallclock from the host on lower tiers.
+5. Benchmarks: decompression timing across all tiers, recorded in `tests/benchmarks/results.md`. Isolated decode time uses the INT 1Ah BIOS tick counter inside the guest (one mechanism, works 8086+); host wallclock is captured as a cross-check.
 6. Manual testing on real hardware. 86Box gives cycle-accurate 8088/8086 emulation. Real iron (e.g., a Pentium III machine) catches things emulators miss.
 
 ## 10. Implementation phases
@@ -379,7 +379,7 @@ Verify:
 - DOSBox-X tests for all viable (algorithm, target) combinations. Matrix in `tests/integration/`.
 - LZMA produces smaller files than aPLib on payloads > 100KB.
 - LZMA decompression on 386 tier completes within 10x the aPLib decompression time on the same payload. Anything worse means the LZMA stub needs optimization.
-- pentium-mmx aplib decompression speedup over pentium aplib: gate redefined. The 30% "literal-heavy" threshold was speculative — aPLib emits literals one byte at a time gated on bit-decode decisions (no literal-run opcode), so "literal-heavy" and "MMX-acceleratable" are mutually exclusive. The MMX path (`aplib_depack_mmx.asm`) copies 8 bytes per MOVQ only when `offset >= 8 AND length >= 8`; typical aPLib payloads have a heavy short-match tail (offset 1..7, length 2..6) that skips the MMX path entirely. Realistic speedup on mixed-content payloads: 0–5%. Gate closed as: MMX depacker is correct and wired in; the 30% threshold on literal-heavy payloads is removed. See `tests/benchmarks/results.md` for the full decision and `benchmark_mmx_speedup` in `host/tests/benchmark_tiers.rs` for the RDTSC measurement methodology.
+- pentium-mmx aplib decompression speedup over pentium aplib: gate redefined. The 30% "literal-heavy" threshold was speculative — aPLib emits literals one byte at a time gated on bit-decode decisions (no literal-run opcode), so "literal-heavy" and "MMX-acceleratable" are mutually exclusive. The MMX path (`aplib_depack_mmx.asm`) copies 8 bytes per MOVQ only when `offset >= 8 AND length >= 8`; typical aPLib payloads have a heavy short-match tail (offset 1..7, length 2..6) that skips the MMX path entirely. Realistic speedup on mixed-content payloads: 0–5%. Gate closed as: MMX depacker is correct and wired in; the 30% threshold on literal-heavy payloads is removed. See `tests/benchmarks/results.md` for the full decision and `benchmark_tier_decompression` in `host/tests/benchmark_tiers.rs` for the isolated decode-timing methodology (INT 1Ah bench blobs via `make bench`).
 
 ### Phase 6: LZSA2, polish, and release
 
