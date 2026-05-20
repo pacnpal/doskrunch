@@ -546,9 +546,14 @@ int main(int argc, char **argv)
      * extraction never creates this file. */
     if ((algo == 1 || algo == 2) && perf_mode) {
         int perf_h;
-        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) == 0) {
+        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) != 0) die("create DKPERF");
+        {
             unsigned wrote = 0;
-            (void)_dos_write(perf_h, &decode_ticks_total, 4, &wrote);
+            /* Fail loudly on a short/failed write: the host harness can only
+             * report a confusing "missing/short DKPERF.BIN" otherwise. */
+            if (_dos_write(perf_h, &decode_ticks_total, 4, &wrote) != 0 || wrote != 4u) {
+                die("write DKPERF");
+            }
             _dos_close(perf_h);
         }
     }

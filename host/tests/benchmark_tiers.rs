@@ -309,6 +309,7 @@ fn benchmark_tier_decompression() {
 fn measure_decode_ticks(
     bin: &str,
     payload_path: &Path,
+    payload: &[u8],
     blobs_dir: &Path,
     work_path: &Path,
     algo: &str,
@@ -380,6 +381,18 @@ fn measure_decode_ticks(
             Err(WaitError::Wait(e)) => panic!("dosbox-x wait error: {e} ({algo}/{tier} run {run})"),
         }
 
+        // Verify the extracted payload before trusting the timing: a bench
+        // blob that decodes to wrong bytes but still exits 0 would otherwise
+        // yield misleading ticks. Mirrors benchmark_tier_decompression.
+        let extracted = locate_case_insensitive(rundir_path, "BENCH_PAYLOAD.BIN")
+            .or_else(|| locate_case_insensitive(rundir_path, "BENCH_PA.BIN"))
+            .unwrap_or_else(|| panic!("extracted payload not found ({algo}/{tier} run {run})"));
+        let body = fs::read(&extracted).expect("read extracted");
+        assert!(
+            body.as_slice() == payload,
+            "extracted payload mismatch ({algo}/{tier} run {run})"
+        );
+
         let ticks = read_perf_ticks_file(rundir_path, tier, run);
         if ticks < min_ticks {
             min_ticks = ticks;
@@ -431,6 +444,7 @@ fn benchmark_lzma_vs_aplib() {
         let aplib_ticks = measure_decode_ticks(
             bin,
             &payload_path,
+            &payload,
             &blobs_dir,
             work_path,
             "aplib",
@@ -441,6 +455,7 @@ fn benchmark_lzma_vs_aplib() {
         let lzma_ticks = measure_decode_ticks(
             bin,
             &payload_path,
+            &payload,
             &blobs_dir,
             work_path,
             "lzma",

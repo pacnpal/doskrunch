@@ -449,9 +449,14 @@ int main(int argc, char **argv)
      * present, so a normal extraction never creates this file. */
     if (perf_mode) {
         int perf_h;
-        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) == 0) {
+        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) != 0) die("create DKPERF");
+        {
             unsigned wrote = 0;
-            (void)_dos_write(perf_h, &lzma_ticks_total, 4, &wrote);
+            /* Fail loudly on a short/failed write so the host harness gets a
+             * clear dosbox-nonzero failure instead of "missing DKPERF.BIN". */
+            if (_dos_write(perf_h, &lzma_ticks_total, 4, &wrote) != 0 || wrote != 4u) {
+                die("write DKPERF");
+            }
             _dos_close(perf_h);
         }
     }
