@@ -26,37 +26,19 @@ use std::process::Command;
 use std::time::Duration;
 
 mod common;
-use common::{repo_root, wait_with_timeout, WaitError};
+use common::{cputype_for, fixtures, repo_root, wait_with_timeout, WaitError};
 
 /// Generous cap: you're watching, and the run blocks on a `PAUSE`
 /// waiting for your keypress. 10 minutes is plenty; if you wander off
 /// the child is still cleaned up rather than stalling forever.
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(600);
 
-fn fixtures() -> &'static [&'static str] {
-    &["hello.txt", "numbers.txt", "random.bin", "empty.bin"]
-}
-
-/// Map a `--target` tier to the matching DOSBox-X `cputype` spelling
-/// (same table the correctness gates use).
-fn cputype_for(target: &str) -> &'static str {
-    match target {
-        "8086" => "8086",
-        "286" => "286",
-        "386" => "386",
-        "486" => "486",
-        "pentium" => "pentium",
-        "pentium-mmx" => "pentium_mmx",
-        "p2" => "pentium_ii",
-        "p3" => "pentium_iii",
-        other => panic!("unknown --target {other}; pick 8086|286|386|486|pentium|pentium-mmx|p2|p3"),
-    }
-}
-
 #[test]
 #[ignore = "opens a DOSBox-X window; run with DOSKRUNCH_VISUAL=1 cargo test --test dosbox_visual -- --ignored --nocapture"]
 fn watch_sfx_extract_in_dosbox() {
-    if std::env::var_os("DOSKRUNCH_VISUAL").is_none() {
+    // Require the exact value "1" (not mere presence): this test opens a
+    // real window, so a stray `DOSKRUNCH_VISUAL=0` must NOT trigger it.
+    if std::env::var("DOSKRUNCH_VISUAL").as_deref() != Ok("1") {
         eprintln!(
             "dosbox_visual: skipped (set DOSKRUNCH_VISUAL=1 to open a DOSBox-X window and watch)"
         );

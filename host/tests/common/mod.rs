@@ -80,3 +80,30 @@ pub fn repo_root() -> PathBuf {
     let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     host.parent().expect("host has a parent").to_path_buf()
 }
+
+/// The small fixture set under `tests/fixtures/` that the dosbox gates
+/// pack and re-extract. Shared so the list lives in one place.
+#[allow(dead_code)]
+pub fn fixtures() -> &'static [&'static str] {
+    &["hello.txt", "numbers.txt", "random.bin", "empty.bin"]
+}
+
+/// Map a doskrunch `--target` tier to the matching DOSBox-X `cputype`
+/// string. Panics on an unknown tier so a typo fails loudly rather than
+/// silently running the wrong CPU.
+#[allow(dead_code)]
+pub fn cputype_for(target: &str) -> &'static str {
+    match target {
+        "8086" => "8086",
+        "286" => "286",
+        "386" => "386",
+        "486" => "486",
+        "pentium" => "pentium",
+        "pentium-mmx" => "pentium_mmx",
+        "p2" => "pentium_ii",
+        "p3" => "pentium_iii",
+        other => {
+            panic!("unknown --target {other}; expected 8086|286|386|486|pentium|pentium-mmx|p2|p3")
+        }
+    }
+}

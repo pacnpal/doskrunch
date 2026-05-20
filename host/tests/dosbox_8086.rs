@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::Duration;
 
 mod common;
-use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
+use common::{fixtures, locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 
 /// Hard cap on how long DOSBox-X is allowed to run. The stub processes
 /// 4 tiny fixtures inside an 8086 emulator; even at 4.77 MHz this is
@@ -20,10 +20,6 @@ use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 /// flake won't trip it, tight enough that a hung child fails fast
 /// instead of stalling until the GH Actions job-level timeout.
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(120);
-
-fn fixtures() -> &'static [&'static str] {
-    &["hello.txt", "numbers.txt", "random.bin", "empty.bin"]
-}
 
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
