@@ -394,10 +394,15 @@ int main(int argc, char **argv)
              * decoder starts clean every pass. */
 #ifdef DKRUNCH_BENCH_TICKS
             {
+                /* One tick pair around all reps (reset + run), not per rep:
+                 * at ~55 ms/tick a single decode floors to whole ticks, so
+                 * bracketing the whole repeated block gives a stable read and
+                 * avoids per-rep INT 1Ah overhead. The reset stays inside the
+                 * loop so each pass starts the decoder clean. */
                 u16 rep;
                 u16 reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                u32 t0 = bios_ticks_now();
                 for (rep = 0; rep < reps; rep++) {
-                    u32 t0, t1;
                     xz_dec_microlzma_reset(dec, csize, usize, 1);
                     b.in = g_lzma_src;
                     b.in_pos = 0;
@@ -405,13 +410,11 @@ int main(int argc, char **argv)
                     b.out = g_lzma_buf;
                     b.out_pos = 0;
                     b.out_size = usize;
-                    t0 = bios_ticks_now();
                     ret = xz_dec_microlzma_run(dec, &b);
-                    t1 = bios_ticks_now();
-                    lzma_ticks_total += tick_delta(t0, t1);
                     if (ret != XZ_STREAM_END) die("lzma decode");
                     if (b.out_pos != usize) die("lzma size");
                 }
+                lzma_ticks_total += tick_delta(t0, bios_ticks_now());
             }
 #else
             xz_dec_microlzma_reset(dec, csize, usize, 1);

@@ -484,14 +484,19 @@ int main(int argc, char **argv)
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
 #ifdef DKRUNCH_BENCH_TICKS
+                /* Time the whole repeated decode with ONE tick pair, not a
+                 * delta per rep: at ~55 ms/tick, per-rep timing floors each
+                 * iteration to whole ticks (undercount) and adds an INT 1Ah
+                 * call per rep. Bracketing all reps lets the accumulated
+                 * decode span cross several ticks for a stable read. */
                 reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                t0 = bios_ticks_now();
                 for (rep = 0; rep < reps; rep++) {
-                    t0 = bios_ticks_now();
                     produced = aplib_depack(g_src, g_buf);
-                    t1 = bios_ticks_now();
-                    decode_ticks_total += tick_delta(t0, t1);
                     if (produced != usize) die("aplib size");
                 }
+                t1 = bios_ticks_now();
+                decode_ticks_total += tick_delta(t0, t1);
 #else
                 produced = aplib_depack(g_src, g_buf);
                 if (produced != usize) die("aplib size");
@@ -511,14 +516,15 @@ int main(int argc, char **argv)
                 if (usize > BUF_SIZE)       die("lzsa2 usize");
                 if (read_exact(self, g_src, csize) != 0) die("read lzsa2");
 #ifdef DKRUNCH_BENCH_TICKS
+                /* One tick pair around all reps — see the aplib path above. */
                 reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                t0 = bios_ticks_now();
                 for (rep = 0; rep < reps; rep++) {
-                    t0 = bios_ticks_now();
                     produced = lzsa2_depack(g_src, g_buf);
-                    t1 = bios_ticks_now();
-                    decode_ticks_total += tick_delta(t0, t1);
                     if (produced != usize) die("lzsa2 size");
                 }
+                t1 = bios_ticks_now();
+                decode_ticks_total += tick_delta(t0, t1);
 #else
                 produced = lzsa2_depack(g_src, g_buf);
                 if (produced != usize) die("lzsa2 size");
