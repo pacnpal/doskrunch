@@ -3,7 +3,9 @@
 Notable changes per release. The [Unreleased] section tracks what's on
 `main` but not yet tagged.
 
-## [Unreleased] — v1.1
+## [Unreleased]
+
+## [v1.1.0] — 2026-05-20
 
 ### Added
 
@@ -144,5 +146,6 @@ works on every supported host.
 All three are MIT-compatible. See each vendored directory's
 `LICENSE` / `COPYING` for the exact text.
 
-[Unreleased]: https://github.com/pacnpal/doskrunch/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pacnpal/doskrunch/compare/v1.1.0...HEAD
+[v1.1.0]: https://github.com/pacnpal/doskrunch/releases/tag/v1.1.0
 [v1.0.0]: https://github.com/pacnpal/doskrunch/releases/tag/v1.0.0
