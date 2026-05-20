@@ -297,6 +297,164 @@ fn benchmark_tier_decompression() {
     }
 }
 
+/// Pack `payload_path` with `algo` at `tier`, swap in `bench_blob_name` (an
+/// INT 1Ah-instrumented `make bench` blob), run it under DOSBox-X at
+/// `cputype`, and return the smallest DKPERF.BIN decode-tick count over
+/// RUNS_PER_TIER runs. Shared by `benchmark_lzma_vs_aplib`.
+#[allow(clippy::too_many_arguments)]
+fn measure_decode_ticks(
+    bin: &str,
+    payload_path: &Path,
+    blobs_dir: &Path,
+    work_path: &Path,
+    algo: &str,
+    tier: &str,
+    cputype: &str,
+    bench_blob_name: &str,
+) -> u32 {
+    let sfx_path = work_path.join(format!("OUT_{algo}_{tier}.EXE"));
+    let status = Command::new(bin)
+        .arg("pack")
+        .arg(&sfx_path)
+        .arg(payload_path)
+        .args(["--algo", algo, "--target", tier])
+        .status()
+        .expect("spawn doskrunch pack");
+    assert!(status.success(), "pack failed for {algo}/{tier}");
+
+    let bench_blob_path = blobs_dir.join(bench_blob_name);
+    assert!(
+        bench_blob_path.exists(),
+        "bench blob {bench_blob_name} not found — build it first:\n  \
+         docker run --rm -v \"$PWD:/work\" -w /work/stubs doskrunch-watcom make bench"
+    );
+    let bench_sfx_path = work_path.join(format!("BENCH_{algo}_{tier}.EXE"));
+    build_bench_sfx(&sfx_path, &bench_blob_path, &bench_sfx_path);
+
+    let mut min_ticks = u32::MAX;
+    for run in 0..RUNS_PER_TIER {
+        let rundir = tempfile::tempdir().expect("rundir");
+        let rundir_path = rundir.path();
+        fs::copy(&bench_sfx_path, rundir_path.join("OUT.EXE")).expect("copy sfx into rundir");
+
+        let conf_path = rundir_path.join("dosbox.conf");
+        fs::write(
+            &conf_path,
+            format!(
+                concat!(
+                    "[cpu]\n",
+                    "cputype={cputype}\n",
+                    "core=normal\n",
+                    "cycles=auto\n",
+                    "[dosbox]\n",
+                    "memsize=4\n",
+                    "[sdl]\n",
+                    "output=surface\n",
+                    "[autoexec]\n",
+                    "mount c \"{mount}\"\n",
+                    "c:\n",
+                    "OUT.EXE\n",
+                    "exit\n",
+                ),
+                cputype = cputype,
+                mount = rundir_path.display(),
+            ),
+        )
+        .expect("write dosbox.conf");
+
+        let mut dosbox = Command::new("dosbox-x")
+            .arg("-conf")
+            .arg(&conf_path)
+            .arg("-exit")
+            .arg("-nogui")
+            .env("SDL_VIDEODRIVER", "dummy")
+            .spawn()
+            .expect("spawn dosbox-x");
+        match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
+            Ok(s) => assert!(s.success(), "dosbox-x non-zero ({algo}/{tier} run {run})"),
+            Err(WaitError::Timeout) => panic!("dosbox-x timeout ({algo}/{tier} run {run})"),
+            Err(WaitError::Wait(e)) => panic!("dosbox-x wait error: {e} ({algo}/{tier} run {run})"),
+        }
+
+        let ticks = read_aplib_ticks_file(rundir_path, tier, run);
+        if ticks < min_ticks {
+            min_ticks = ticks;
+        }
+    }
+    min_ticks
+}
+
+/// LZMA-vs-aPLib isolated decode-tick comparison (folded in from the closed
+/// PR #18 / issue #13). For each tier that has both an aplib and an lzma
+/// `make bench` blob (LZMA is 386+), pack the same payload with each algo,
+/// swap in the matching INT 1Ah bench blob, and report the lzma/aplib decode
+/// ratio. PLAN.md §10 frames the gate as "LZMA decode within ~10x aPLib on
+/// the same payload". Measurement only — no assertion (DOSBox-X is a noisy
+/// substrate for absolute timing; see tests/benchmarks/results.md).
+#[test]
+#[ignore = "needs dosbox-x AND DOSKRUNCH_RUN_BENCHMARK=1 AND bench blobs from `make bench`"]
+fn benchmark_lzma_vs_aplib() {
+    if std::env::var_os("DOSKRUNCH_RUN_BENCHMARK").is_none() {
+        eprintln!("benchmark_lzma_vs_aplib: skipped (set DOSKRUNCH_RUN_BENCHMARK=1 to run)");
+        return;
+    }
+
+    let root = repo_root();
+    let work = tempfile::tempdir().expect("create tempdir");
+    let work_path = work.path();
+    let blobs_dir = root.join("stubs").join("blobs");
+    let bin = env!("CARGO_BIN_EXE_doskrunch");
+
+    let payload = synthesize_payload();
+    assert_eq!(payload.len(), PAYLOAD_SIZE);
+    let payload_path = root.join("target").join("bench_payload.bin");
+    fs::create_dir_all(payload_path.parent().unwrap()).expect("mkdir target");
+    fs::write(&payload_path, &payload).expect("write payload");
+
+    // Only tiers with BOTH a `make bench` aplib and lzma blob (LZMA is 386+).
+    let tiers: &[(&str, &str, &str, &str)] = &[
+        ("386", "386", "aplib_386_bench.bin", "lzma_386_bench.bin"),
+        (
+            "pentium",
+            "pentium",
+            "aplib_pentium_bench.bin",
+            "lzma_pentium_bench.bin",
+        ),
+    ];
+
+    println!("\nLZMA vs aPLib decode ticks (INT 1Ah, min of {RUNS_PER_TIER} runs):");
+    for (tier, cputype, aplib_blob, lzma_blob) in tiers {
+        let aplib_ticks = measure_decode_ticks(
+            bin,
+            &payload_path,
+            &blobs_dir,
+            work_path,
+            "aplib",
+            tier,
+            cputype,
+            aplib_blob,
+        );
+        let lzma_ticks = measure_decode_ticks(
+            bin,
+            &payload_path,
+            &blobs_dir,
+            work_path,
+            "lzma",
+            tier,
+            cputype,
+            lzma_blob,
+        );
+        let ratio = lzma_ticks as f64 / aplib_ticks.max(1) as f64;
+        println!(
+            "  tier={tier:8} aplib={aplib_ticks:6} ticks  lzma={lzma_ticks:6} ticks  lzma/aplib={ratio:.2}x",
+        );
+    }
+    println!(
+        "  (PLAN.md §10 gate context: LZMA decode within ~10x aPLib on the same payload.)"
+    );
+    // No assertion — measurement harness only; record numbers by hand.
+}
+
 fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     let dest = root.join("tests").join("benchmarks").join("results.md");
     fs::create_dir_all(dest.parent().unwrap()).expect("mkdir benchmarks");

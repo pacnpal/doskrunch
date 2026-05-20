@@ -485,11 +485,12 @@ $(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_
 # RDTSC isn't available on 8086/386, so these blobs time the depacker with
 # the BIOS tick counter (INT 1Ah/AH=00h, ~18.2 Hz, 8086+). Compiled with
 # -DDKRUNCH_BENCH_TICKS, which turns on the timing wrappers + DKPERF.BIN
-# sidecar in stub.c. These blobs are NOT shipped: the instrumentation adds
-# ~1.3 KB (over the 8086 hard ceiling) and changes extraction behavior, so
-# it must stay out of `make all`. The host benchmark harness
-# (host/tests/benchmark_tiers.rs::benchmark_tier_decompression) swaps one
-# of these blobs onto the packed archive to read decode ticks.
+# sidecar in stub.c (aplib_*_bench) and stub_lzma.c (lzma_*_bench). These
+# blobs are NOT shipped: the instrumentation adds ~1.3 KB (over the 8086
+# hard ceiling) and changes extraction behavior, so it must stay out of
+# `make all`. The host harness (benchmark_tier_decompression and
+# benchmark_lzma_vs_aplib in host/tests/benchmark_tiers.rs) swaps one of
+# these blobs onto the packed archive to read decode ticks.
 #
 #   docker run --rm -v "$PWD:/work" -w /work/stubs doskrunch-watcom make bench
 #   DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy \
@@ -499,7 +500,10 @@ $(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_
 bench: \
 	$(OUTDIR)/aplib_8086_bench.bin \
 	$(OUTDIR)/aplib_386_bench.bin \
-	$(OUTDIR)/aplib_pentium_bench.bin
+	$(OUTDIR)/aplib_pentium_bench.bin \
+	$(OUTDIR)/lzma_386_bench.bin \
+	$(OUTDIR)/lzma_486_bench.bin \
+	$(OUTDIR)/lzma_pentium_bench.bin
 
 $(SRC)/stub_8086_bench.obj: $(SRC)/stub.c
 	cd $(SRC) && $(WCC) $(WCC_FLAGS_8086) -DDKRUNCH_BENCH_TICKS -fo=stub_8086_bench.obj stub.c
@@ -545,6 +549,58 @@ $(OUTDIR)/aplib_pentium_bench.bin: $(SRC)/stub_p5_bench.obj $(SRC)/aplib_depack_
 	@cp $(OUTDIR)/aplib_pentium_bench.exe $(OUTDIR)/aplib_pentium_bench.bin
 	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium_bench.bin); \
 	  echo "aplib_pentium_bench.bin: $$SZ bytes (bench blob; not shipped)"
+
+# LZMA bench blobs (folded in from the closed #18 LZMA-vs-aPLib gate). The
+# timing lives in stub_lzma.c behind the same DKRUNCH_BENCH_TICKS guard;
+# only the stub_lzma_*_bench.obj is rebuilt with -DDKRUNCH_BENCH_TICKS, and
+# they reuse the shared xz_crc32_* / xz_dec_lzma2_* objects (no timing in
+# the vendored xz code). The harness packs --algo lzma at the same tiers,
+# swaps one of these blobs in, and reads DKPERF.BIN — letting it compare
+# LZMA vs aPLib decode ticks on identical payloads. Gitignored, not shipped.
+$(SRC)/stub_lzma_386_bench.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -3 -DDKRUNCH_BENCH_TICKS -fo=$@ $<
+
+$(OUTDIR)/lzma_386_bench.bin: $(SRC)/stub_lzma_386_bench.obj $(SRC)/xz_crc32_386.obj $(SRC)/xz_dec_lzma2_386.obj $(SRC)/exec_dos.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_386_bench.exe \
+	  file $(SRC)/stub_lzma_386_bench.obj \
+	  file $(SRC)/xz_crc32_386.obj \
+	  file $(SRC)/xz_dec_lzma2_386.obj \
+	  file $(SRC)/exec_dos.obj
+	@cp $(OUTDIR)/lzma_386_bench.exe $(OUTDIR)/lzma_386_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_386_bench.bin); \
+	  echo "lzma_386_bench.bin: $$SZ bytes (bench blob; not shipped)"
+
+$(SRC)/stub_lzma_486_bench.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -4 -DDKRUNCH_BENCH_TICKS -fo=$@ $<
+
+$(OUTDIR)/lzma_486_bench.bin: $(SRC)/stub_lzma_486_bench.obj $(SRC)/xz_crc32_486.obj $(SRC)/xz_dec_lzma2_486.obj $(SRC)/exec_dos.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_486_bench.exe \
+	  file $(SRC)/stub_lzma_486_bench.obj \
+	  file $(SRC)/xz_crc32_486.obj \
+	  file $(SRC)/xz_dec_lzma2_486.obj \
+	  file $(SRC)/exec_dos.obj
+	@cp $(OUTDIR)/lzma_486_bench.exe $(OUTDIR)/lzma_486_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_486_bench.bin); \
+	  echo "lzma_486_bench.bin: $$SZ bytes (bench blob; not shipped)"
+
+$(SRC)/stub_lzma_p5_bench.obj: $(SRC)/stub_lzma.c
+	$(WCC) $(LZMA_STUB_CFLAGS_COMMON) -5 -DDKRUNCH_BENCH_TICKS -fo=$@ $<
+
+$(OUTDIR)/lzma_pentium_bench.bin: $(SRC)/stub_lzma_p5_bench.obj $(SRC)/xz_crc32_p5.obj $(SRC)/xz_dec_lzma2_p5.obj $(SRC)/exec_dos.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/lzma_pentium_bench.exe \
+	  file $(SRC)/stub_lzma_p5_bench.obj \
+	  file $(SRC)/xz_crc32_p5.obj \
+	  file $(SRC)/xz_dec_lzma2_p5.obj \
+	  file $(SRC)/exec_dos.obj
+	@cp $(OUTDIR)/lzma_pentium_bench.exe $(OUTDIR)/lzma_pentium_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/lzma_pentium_bench.bin); \
+	  echo "lzma_pentium_bench.bin: $$SZ bytes (bench blob; not shipped)"
 
 clean:
 	rm -f $(OUTDIR)/*.exe $(OUTDIR)/*.bin
