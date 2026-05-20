@@ -423,9 +423,6 @@ int main(int argc, char **argv)
             die("unsafe name");
         }
         if (read_exact(self, &attrs, 1) != 0) die("read attrs");
-#ifdef DKRUNCH_BENCH_TICKS
-        if (is_bench_payload_name(namebuf)) perf_mode = 1;
-#endif
         if (read_exact(self, ts_b, 4) != 0)   die("read ts");
         ts = rd_u32(ts_b);
         dos_time = (u16)(ts & 0xFFFFu);
@@ -451,6 +448,14 @@ int main(int argc, char **argv)
             if (read_exact(self, filecrc, 4) != 0) die("skip filecrc");
             continue;
         }
+
+#ifdef DKRUNCH_BENCH_TICKS
+        /* Enable perf timing only after the bench payload's output file was
+         * successfully created — if _dos_creat had failed above we'd have
+         * `continue`d, so reaching here means this file's chunks will be
+         * decoded and DKPERF.BIN ticks will reflect a real extraction. */
+        if (is_bench_payload_name(namebuf)) perf_mode = 1;
+#endif
 
         for (ci = 0; ci < chunk_count; ci++) {
             u16 csize;
