@@ -147,6 +147,45 @@ static u32 rd_u32(const u8 *p)
          | ((u32)p[3] << 24);
 }
 
+#ifdef DKRUNCH_BENCH_TICKS
+/* Bench-only decode timing — see the same block in stubs/src/stub.c. The
+ * LZMA decoder gets its own copy of these helpers because stub_lzma.c is a
+ * separate program. Compiled ONLY into the lzma_*_bench.bin blobs
+ * (`make bench`), never into the shipped `make all` blobs: the shipped
+ * stub must not carry the repeat-decode loop or the DKPERF.BIN sidecar. */
+static u32 bios_ticks_now(void)
+{
+    union REGS inregs, outregs;
+    inregs.h.ah = 0x00;
+    int86(0x1a, &inregs, &outregs);
+    return ((u32)outregs.x.cx << 16) | (u32)outregs.x.dx;
+}
+
+/* INT 1Ah wraps at MIDNIGHT (0x1800B0 ticks), not 2^32; a plain t1-t0 is
+ * wrong across a rollover. Sub-second decode makes this defensive, but
+ * compute the wrap-correct delta anyway. Mirrors stub.c::tick_delta. */
+#define BIOS_TICKS_PER_DAY 0x1800B0UL
+static u32 tick_delta(u32 t0, u32 t1)
+{
+    return (t1 >= t0) ? (t1 - t0) : (u32)(BIOS_TICKS_PER_DAY - t0 + t1);
+}
+
+/* BENCH_PA.BIN (8.3 form of bench_payload.bin) gates the perf sidecar so a
+ * normal extraction doesn't repeat-decode or write DKPERF.BIN. Matches the
+ * FULL 8.3 name case-insensitively (stem AND .BIN extension). */
+static int is_bench_payload_name(const char *s)
+{
+    static const char BENCH[] = "BENCH_PA.BIN";
+    unsigned i;
+    for (i = 0; i < sizeof(BENCH) - 1; i++) {
+        char c = s[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if (c != BENCH[i]) return 0;
+    }
+    return s[sizeof(BENCH) - 1] == '\0';
+}
+#endif /* DKRUNCH_BENCH_TICKS */
+
 static int ieq_upper(const char *s, unsigned slen, const char *lit)
 {
     unsigned i;
@@ -215,6 +254,10 @@ int main(int argc, char **argv)
     u16 flags;
     u16 run_after_offset;
     u8 algo;
+#ifdef DKRUNCH_BENCH_TICKS
+    int perf_mode = 0;
+    u32 lzma_ticks_total = 0;
+#endif
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
     u8 hcrc[4];
@@ -320,6 +363,13 @@ int main(int argc, char **argv)
             continue;
         }
 
+#ifdef DKRUNCH_BENCH_TICKS
+        /* Enable perf timing only after the output file was created (a failed
+         * _dos_creat above would have `continue`d), so DKPERF.BIN ticks
+         * always reflect a real extraction. */
+        if (is_bench_payload_name(namebuf)) perf_mode = 1;
+#endif
+
         for (ci = 0; ci < chunk_count; ci++) {
             u16 csize;
             u16 usize;
@@ -339,7 +389,34 @@ int main(int argc, char **argv)
             if (read_exact(self, g_lzma_src, csize) != 0) die("read lzma");
 
             /* Reset for this chunk. uncomp_size_is_exact=1 because the
-             * DKCH header per-chunk usize is authoritative. */
+             * DKCH header per-chunk usize is authoritative. The reset +
+             * xz_buf setup must repeat for each timed iteration so the
+             * decoder starts clean every pass. */
+#ifdef DKRUNCH_BENCH_TICKS
+            {
+                /* One tick pair around all reps (reset + run), not per rep:
+                 * at ~55 ms/tick a single decode floors to whole ticks, so
+                 * bracketing the whole repeated block gives a stable read and
+                 * avoids per-rep INT 1Ah overhead. The reset stays inside the
+                 * loop so each pass starts the decoder clean. */
+                u16 rep;
+                u16 reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                u32 t0 = bios_ticks_now();
+                for (rep = 0; rep < reps; rep++) {
+                    xz_dec_microlzma_reset(dec, csize, usize, 1);
+                    b.in = g_lzma_src;
+                    b.in_pos = 0;
+                    b.in_size = csize;
+                    b.out = g_lzma_buf;
+                    b.out_pos = 0;
+                    b.out_size = usize;
+                    ret = xz_dec_microlzma_run(dec, &b);
+                    if (ret != XZ_STREAM_END) die("lzma decode");
+                    if (b.out_pos != usize) die("lzma size");
+                }
+                lzma_ticks_total += tick_delta(t0, bios_ticks_now());
+            }
+#else
             xz_dec_microlzma_reset(dec, csize, usize, 1);
 
             b.in = g_lzma_src;
@@ -352,6 +429,7 @@ int main(int argc, char **argv)
             ret = xz_dec_microlzma_run(dec, &b);
             if (ret != XZ_STREAM_END) die("lzma decode");
             if (b.out_pos != usize) die("lzma size");
+#endif
 
             if (_dos_write(out, g_lzma_buf, usize, &wrote) != 0 || wrote != usize) {
                 die("write lzma");
@@ -370,6 +448,26 @@ int main(int argc, char **argv)
     }
 
     xz_dec_microlzma_end(dec);
+
+#ifdef DKRUNCH_BENCH_TICKS
+    /* Bench-only: write the total LZMA decode ticks to DKPERF.BIN as a
+     * little-endian u32 so the host harness can read it after DOSBox-X
+     * exits. perf_mode is only set when the BENCH_PA.BIN payload is
+     * present, so a normal extraction never creates this file. */
+    if (perf_mode) {
+        int perf_h;
+        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) != 0) die("create DKPERF");
+        {
+            unsigned wrote = 0;
+            /* Fail loudly on a short/failed write so the host harness gets a
+             * clear dosbox-nonzero failure instead of "missing DKPERF.BIN". */
+            if (_dos_write(perf_h, &lzma_ticks_total, 4, &wrote) != 0 || wrote != 4u) {
+                die("write DKPERF");
+            }
+            _dos_close(perf_h);
+        }
+    }
+#endif /* DKRUNCH_BENCH_TICKS */
 
     /* Run-after-extract (v1.1): INT 21h/4Bh EXEC. Same logic as
      * stub.c; compact-model pointer differences are absorbed by

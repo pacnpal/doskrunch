@@ -18,5 +18,6 @@ stubs/*.err
 stubs/src/*.o
 stubs/src/*.obj
 stubs/src/*.err
-# Bench blobs (RDTSC-instrumented; built locally for Phase 5 MMX gate measurement).
+
+# Bench-only stub blobs (built via `make bench`, never committed)
 stubs/blobs/*_bench.bin

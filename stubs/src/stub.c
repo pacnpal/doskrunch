@@ -110,44 +110,6 @@ static char g_exec_cmdline[130];
 extern unsigned int aplib_depack(const u8 *src, u8 *dst);
 #pragma aux aplib_depack "*" parm [si] [di] value [ax] modify exact [ax bx cx dx si di];
 
-/* RDTSC cycle-counter helper (bench builds only).
- *
- * Defined in stubs/src/rdtsc_helper.asm; linked into pentium+ bench blobs
- * built with -DDKRUNCH_BENCH_RDTSC. Returns the low 32 bits of the IA32
- * Time Stamp Counter as a Watcom 16-bit unsigned long (DX:AX). At 100 MHz
- * a 32-bit TSC wraps in ~42 seconds — sufficient for sub-second decode
- * measurements. Unsigned subtraction handles wrap-around correctly.
- *
- * Do NOT link rdtsc_helper.obj into 8086 / 286 / 386 / 486 tier blobs:
- * those CPUs predate RDTSC and will fault with #UD (invalid opcode).
- *
- * Reused by the LZMA-vs-aPLib timing gate (issue #13) and the Phase 3
- * 386/pentium speedup gate (issue #14); all three instrument the same
- * depack call sites in this file. */
-#ifdef DKRUNCH_BENCH_RDTSC
-extern unsigned long rdtsc_lo(void);
-#pragma aux rdtsc_lo "*" value [dx ax] modify exact [ax dx];
-static unsigned long g_decode_ticks;
-
-/* Minimal decimal formatter for putu32() — avoids pulling in stdio. */
-static void putu32(unsigned long val)
-{
-    /* 10 decimal digits max for a 32-bit value, plus NUL. */
-    char buf[11];
-    int i = 10;
-    buf[10] = '\0';
-    if (val == 0UL) {
-        buf[--i] = '0';
-    } else {
-        while (val > 0UL) {
-            buf[--i] = (char)('0' + (int)(val % 10UL));
-            val /= 10UL;
-        }
-    }
-    puts2(buf + i);
-}
-#endif /* DKRUNCH_BENCH_RDTSC */
-
 /* INT 21h/4Bh EXEC primitive. prog_si and pb_di are near offsets within
  * DS of the program path and EXEC parameter block, respectively.
  * Implemented in stubs/src/exec_dos.asm (cpu 8086, linked into every tier).
@@ -245,6 +207,38 @@ static u32 rd_u32(const u8 *p)
          | ((u32)p[3] << 24);
 }
 
+#ifdef DKRUNCH_BENCH_TICKS
+/* BIOS timer tick counter: INT 1Ah/AH=00h, returns CX:DX ticks since
+ * midnight at ~18.2065 Hz. Available on 8086+ and stable across all
+ * doskrunch target tiers.
+ *
+ * Bench builds only: this and the rest of the DKRUNCH_BENCH_TICKS code is
+ * compiled ONLY into the *_bench.bin blobs (`make bench`), never into the
+ * shipped `make all` blobs. Keeping it out of production matters twice
+ * over: the timing path adds ~1.3 KB (which pushes the 8086 blob past its
+ * 8 KB hard ceiling), and it changes extraction behavior (repeat-decode
+ * loop + DKPERF.BIN sidecar) that shipped SFXes must not have. INT 1Ah is
+ * the single timing mechanism across all tiers — it works on 8086+, unlike
+ * RDTSC which is Pentium-only. */
+static u32 bios_ticks_now(void)
+{
+    union REGS inregs, outregs;
+    inregs.h.ah = 0x00;
+    int86(0x1a, &inregs, &outregs);
+    return ((u32)outregs.x.cx << 16) | (u32)outregs.x.dx;
+}
+
+/* The INT 1Ah tick counter wraps at MIDNIGHT (0x1800B0 = 1,573,040 ticks),
+ * NOT at 2^32, so a plain `t1 - t0` is wrong across a midnight rollover
+ * (it underflows to a huge value). A single decode is sub-second so this
+ * is purely defensive, but compute the wrap-correct delta anyway. */
+#define BIOS_TICKS_PER_DAY 0x1800B0UL
+static u32 tick_delta(u32 t0, u32 t1)
+{
+    return (t1 >= t0) ? (t1 - t0) : (u32)(BIOS_TICKS_PER_DAY - t0 + t1);
+}
+#endif /* DKRUNCH_BENCH_TICKS */
+
 /* Case-insensitive equality against an upper-case literal. `lit` must
  * be ASCII upper-case; `s` is the name stem we're checking. */
 static int ieq_upper(const char *s, unsigned slen, const char *lit)
@@ -312,10 +306,32 @@ static int validate_name(const char *s, unsigned slen)
     return 0;
 }
 
+#ifdef DKRUNCH_BENCH_TICKS
+/* Benchmark harness marker payload: BENCH_PA.BIN (8.3-mangled form of
+ * bench_payload.bin). Used only to gate optional perf sidecar output
+ * in benchmark runs so normal extraction doesn't create extra files.
+ * Matches the FULL 8.3 name case-insensitively (stem AND .BIN extension),
+ * so neither "BENCH_PA2" nor "BENCH_PA.TXT" trips perf_mode. */
+static int is_bench_payload_name(const char *s)
+{
+    static const char BENCH[] = "BENCH_PA.BIN";
+    unsigned i;
+    for (i = 0; i < sizeof(BENCH) - 1; i++) {
+        char c = s[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if (c != BENCH[i]) return 0;
+    }
+    return s[sizeof(BENCH) - 1] == '\0';
+}
+#endif /* DKRUNCH_BENCH_TICKS */
+
 int main(int argc, char **argv)
 {
     int self;
     int out;
+#ifdef DKRUNCH_BENCH_TICKS
+    int perf_mode = 0;
+#endif
     u32 archive_off;
     long self_size;
     u16 file_count;
@@ -323,6 +339,9 @@ int main(int argc, char **argv)
     u16 flags;
     u16 run_after_offset;
     u8 algo;
+#ifdef DKRUNCH_BENCH_TICKS
+    u32 decode_ticks_total = 0;
+#endif
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
     u8 hcrc[4];
@@ -431,9 +450,23 @@ int main(int argc, char **argv)
             continue;
         }
 
+#ifdef DKRUNCH_BENCH_TICKS
+        /* Enable perf timing only after the bench payload's output file was
+         * successfully created — if _dos_creat had failed above we'd have
+         * `continue`d, so reaching here means this file's chunks will be
+         * decoded and DKPERF.BIN ticks will reflect a real extraction. */
+        if (is_bench_payload_name(namebuf)) perf_mode = 1;
+#endif
+
         for (ci = 0; ci < chunk_count; ci++) {
             u16 csize;
             u16 usize;
+#ifdef DKRUNCH_BENCH_TICKS
+            u16 rep;
+            u16 reps;
+            u32 t0;
+            u32 t1;
+#endif
             unsigned wrote;
             unsigned produced;
             if (read_exact(self, ch_b, 4) != 0) die("read chunk header");
@@ -451,16 +484,24 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("aplib csize");
                 if (usize > BUF_SIZE)       die("aplib usize");
                 if (read_exact(self, g_src, csize) != 0) die("read aplib");
-#ifdef DKRUNCH_BENCH_RDTSC
-                {
-                    unsigned long t0 = rdtsc_lo();
+#ifdef DKRUNCH_BENCH_TICKS
+                /* Time the whole repeated decode with ONE tick pair, not a
+                 * delta per rep: at ~55 ms/tick, per-rep timing floors each
+                 * iteration to whole ticks (undercount) and adds an INT 1Ah
+                 * call per rep. Bracketing all reps lets the accumulated
+                 * decode span cross several ticks for a stable read. */
+                reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                t0 = bios_ticks_now();
+                for (rep = 0; rep < reps; rep++) {
                     produced = aplib_depack(g_src, g_buf);
-                    g_decode_ticks += rdtsc_lo() - t0;
+                    if (produced != usize) die("aplib size");
                 }
+                t1 = bios_ticks_now();
+                decode_ticks_total += tick_delta(t0, t1);
 #else
                 produced = aplib_depack(g_src, g_buf);
-#endif
                 if (produced != usize) die("aplib size");
+#endif
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write aplib");
                 }
@@ -475,16 +516,20 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("lzsa2 csize");
                 if (usize > BUF_SIZE)       die("lzsa2 usize");
                 if (read_exact(self, g_src, csize) != 0) die("read lzsa2");
-#ifdef DKRUNCH_BENCH_RDTSC
-                {
-                    unsigned long t0 = rdtsc_lo();
+#ifdef DKRUNCH_BENCH_TICKS
+                /* One tick pair around all reps — see the aplib path above. */
+                reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                t0 = bios_ticks_now();
+                for (rep = 0; rep < reps; rep++) {
                     produced = lzsa2_depack(g_src, g_buf);
-                    g_decode_ticks += rdtsc_lo() - t0;
+                    if (produced != usize) die("lzsa2 size");
                 }
+                t1 = bios_ticks_now();
+                decode_ticks_total += tick_delta(t0, t1);
 #else
                 produced = lzsa2_depack(g_src, g_buf);
-#endif
                 if (produced != usize) die("lzsa2 size");
+#endif
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write lzsa2");
                 }
@@ -502,6 +547,29 @@ int main(int argc, char **argv)
         puts2(namebuf);
         puts2("\r\n");
     }
+
+#ifdef DKRUNCH_BENCH_TICKS
+    /* Bench-only: write the accumulated decode ticks (aplib or lzsa2 — the
+     * stored path has no decode) to DKPERF.BIN as a little-endian u32 for
+     * the host harness. Emitted BEFORE the run-after EXEC below, which
+     * returns without falling through; placing it here means the sidecar
+     * lands on every exit path, not just the no-run-after case. perf_mode
+     * is only set when the BENCH_PA.BIN payload is present, so a normal
+     * extraction never creates this file. */
+    if ((algo == 1 || algo == 2) && perf_mode) {
+        int perf_h;
+        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) != 0) die("create DKPERF");
+        {
+            unsigned wrote = 0;
+            /* Fail loudly on a short/failed write: the host harness can only
+             * report a confusing "missing/short DKPERF.BIN" otherwise. */
+            if (_dos_write(perf_h, &decode_ticks_total, 4, &wrote) != 0 || wrote != 4u) {
+                die("write DKPERF");
+            }
+            _dos_close(perf_h);
+        }
+    }
+#endif /* DKRUNCH_BENCH_TICKS */
 
     /* Run-after-extract (v1.1): INT 21h/4Bh EXEC. */
     if (flags & FLAG_RUN_AFTER) {
@@ -574,23 +642,6 @@ int main(int argc, char **argv)
             return 0;
         }
     }
-
-#ifdef DKRUNCH_BENCH_RDTSC
-    /* Print accumulated decode-only TSC tick count for the benchmark
-     * harness. The harness redirects SFX stdout to a file and parses
-     * this line to compute per-tier decode latency independently of
-     * DOS startup and INT 21h file I/O overhead.
-     *
-     * Format: "DKBENCH:decode_ticks=<decimal>\r\n"
-     * Example: "DKBENCH:decode_ticks=3141592\r\n"
-     *
-     * The host reads this from the captured output file after DOSBox-X
-     * exits. bench_tiers.rs looks for the "DKBENCH:decode_ticks=" prefix
-     * and parses the decimal integer that follows. */
-    puts2("DKBENCH:decode_ticks=");
-    putu32(g_decode_ticks);
-    puts2("\r\n");
-#endif
 
     _dos_close(self);
     return 0;

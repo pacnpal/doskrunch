@@ -142,9 +142,11 @@ measurement:
   matches (offset ≥ 8, length ≥ 8). The 30% "literal-heavy" threshold is
   removed because aPLib literals have no vector-copyable structure (no
   literal-run opcode — each literal requires a separate bit-decode). See
-  `tests/benchmarks/results.md` for the full rationale. RDTSC bench
-  infrastructure (`stubs/src/rdtsc_helper.asm`, `make bench`,
-  `benchmark_mmx_speedup`) is available for local measurement.
+  PLAN.md §10 for the full rationale. The bench-only decode-timing harness
+  (`make bench` blobs + `benchmark_tier_decompression` in
+  `host/tests/benchmark_tiers.rs`) measures isolated decode time via the
+  INT 1Ah BIOS tick counter (8086+) for local measurement, though it does
+  not isolate the pentium-mmx-vs-pentium delta specifically.
 - **LZMA-vs-aPLib decompression-time gate** (PLAN.md §10). DOSBox-X is a
   noisy substrate for cycle-accurate comparisons. The multi-chunk LZMA gate
   finishes in roughly 3x the aPLib gate's wall-clock; cleanly isolating
