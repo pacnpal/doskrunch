@@ -13,12 +13,57 @@ keep around for whenever you need to ship something to a vintage box.
 
 ## Install
 
+DOSKrunch is a single self-contained binary named `doskrunch`. There are two ways to get it.
+
+### Option A — build with Cargo (any platform)
+
+Needs a recent [Rust toolchain](https://rustup.rs) (install via rustup). Works the same on Linux, macOS, and Windows:
+
 ```bash
-cargo install --git https://github.com/pacnpal/doskrunch
+cargo install --git https://github.com/pacnpal/doskrunch --locked
 ```
 
-Or grab a prebuilt binary from the GitHub Releases page (Linux x86_64,
-Linux aarch64, macOS x86_64, macOS aarch64, Windows x86_64).
+Cargo drops the `doskrunch` binary in `~/.cargo/bin` (Windows: `%USERPROFILE%\.cargo\bin`), which rustup already put on your `PATH`. Verify:
+
+```bash
+doskrunch --help
+```
+
+### Option B — download a prebuilt binary (no Rust needed)
+
+Grab the archive for your platform from the [Releases page](https://github.com/pacnpal/doskrunch/releases) — Linux (x86_64 / aarch64), macOS (x86_64 / aarch64 — pick `aarch64` for Apple Silicon, `x86_64` for Intel Macs), or Windows (x86_64). Then:
+
+**Linux**
+```bash
+tar xzf doskrunch-*-linux-*.tar.gz       # or unzip, depending on the asset
+chmod +x doskrunch
+sudo mv doskrunch /usr/local/bin/          # or anywhere on your PATH
+doskrunch --help
+```
+
+**macOS**
+```bash
+tar xzf doskrunch-*-macos-*.tar.gz
+chmod +x doskrunch
+# Gatekeeper quarantines downloaded binaries; clear it once:
+xattr -d com.apple.quarantine doskrunch 2>/dev/null || true
+sudo mv doskrunch /usr/local/bin/
+doskrunch --help
+```
+(If macOS still blocks it: System Settings → Privacy & Security → "Open Anyway".)
+
+**Windows (PowerShell)**
+```powershell
+# Unzip the downloaded doskrunch-*-windows-x86_64.zip, then from that folder:
+.\doskrunch.exe --help
+# To run it from anywhere, move doskrunch.exe into a folder on your PATH
+# (e.g. create C:\Tools, add it to PATH, and copy doskrunch.exe there).
+```
+SmartScreen may warn about an unsigned download — choose "More info → Run anyway".
+
+> No prebuilt assets yet? Until the first tagged release lands, use **Option A** (`cargo install`).
+
+Everywhere below, Windows users type `doskrunch.exe` (or just `doskrunch` once it's on `PATH`); Linux/macOS users type `doskrunch`. The arguments are identical.
 
 ## Quick start
 
@@ -64,12 +109,39 @@ doskrunch unpack out.exe -d extracted/
 LZMA requires `--target 386` or higher. The CLI refuses `--algo lzma --target
 8086` (or `286`) with a clear error. Everything else works on every tier.
 
-## Recommended defaults
+## Which options should I use?
 
-- "I don't know what to pick" → `doskrunch pack out.exe files/` (aplib on 8086).
-- "Original IBM PC, decompression speed matters" → `--algo lzsa2 --target 8086`.
-- "Modern retro hardware, 386 onward" → `--algo aplib --target 386`.
-- "Late 90s machine, shipping a big payload" → `--algo lzma --target p2`.
+**Best, most compatible choice: the defaults — `aplib` compression on the `8086`
+target.** That's just:
+
+```bash
+doskrunch pack out.exe files/
+```
+
+aPLib runs on every x86 CPU from the 1981 8088 up and gives excellent compression
+(a ~200-byte decompressor), and the `8086` target runs on *any* DOS machine. If you
+don't have a specific reason to choose otherwise, stop here — this is the right pick.
+
+Reach for a different combination only when you have a concrete need:
+
+| Your situation | Pick | Command |
+|----------------|------|---------|
+| **Not sure — make it run anywhere** (recommended) | `aplib` + `8086` *(default)* | `doskrunch pack out.exe files/` |
+| Original IBM PC/XT (4.77 MHz 8088), want the *fastest* unpacking | `lzsa2` + `8086` | `doskrunch pack --algo lzsa2 --target 8086 out.exe files/` |
+| 386/486-era machine, want tighter compression | `aplib` + `386` | `doskrunch pack --algo aplib --target 386 out.exe files/` |
+| Pentium-class machine, shipping a large payload, want the *smallest* file | `lzma` + `p2` | `doskrunch pack --algo lzma --target p2 out.exe files/` |
+| Input is already compressed (`.zip`, `.jpg`, `.mp3`…) | `stored` | `doskrunch pack --algo stored out.exe media/` |
+
+Rules of thumb:
+- An SFX built for a target runs on that CPU **and newer**, never on older ones: a
+  `386`-targeted SFX runs on a 386 and up but **not** on a real 8086/286. Targeting a
+  higher tier only makes unpacking faster — it doesn't change the archive size (the
+  compressed bytes are the same for a given algo regardless of target) or correctness
+  on newer CPUs. When in doubt, target lower; `8086` runs everywhere.
+- Smaller archives come from the *algorithm* (`lzma` < `aplib` < `lzsa2` < `stored`),
+  not the target tier.
+- `lzma` needs `--target 386` or higher (the CLI refuses `8086`/`286` with a clear error).
+- `aplib`, `lzsa2`, and `stored` run on every tier, `8086` through `p3`.
 
 ## Subcommands
 

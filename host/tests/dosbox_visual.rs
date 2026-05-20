@@ -38,6 +38,11 @@ use common::{cputype_for, fixtures, repo_root, wait_with_timeout, WaitError};
 /// off the child is still cleaned up rather than stalling forever.
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// The DOSKrunch ASCII logo (figlet "small" font), shown in each window.
+/// Lives in its own file so the `| \ /` art needs no Rust escaping; it's
+/// written to the mount as DKBANNER.TXT and `TYPE`d in DOS.
+const LOGO: &str = include_str!("dkbanner.txt");
+
 /// Every shipped CPU tier, broadest to tightest.
 const ALL_TIERS: &[&str] = &[
     "8086",
@@ -157,10 +162,33 @@ fn watch_sfx_extract_in_dosbox() {
         let sfx_size = fs::metadata(&sfx_path).expect("stat packed SFX").len();
         eprintln!("[{idx}/{total}] {algo}/{tier}: {sfx_size} bytes — opening DOSBox-X window...");
 
+        // Write the banner as a text file and `TYPE` it in DOS, rather than
+        // echo it: a file is printed literally, so the figlet logo (which
+        // uses | \ /) renders without DOS treating | as a pipe. CRLF line
+        // endings keep DOS `type` happy. DKBANNER.TXT is 8.3-clean and gets
+        // del'd before the `dir` so it doesn't show among the extracted files.
+        let banner_raw = format!(
+            "{LOGO}\n\n   {version}   -   squeeze it down, run it on real DOS\n   \
+             tier {idx} of {total}:   {tier}        algo:   {algo}",
+            // trim_end so the logo file's trailing newline doesn't add an
+            // extra blank line before the version/tier text.
+            LOGO = LOGO.trim_end(),
+            version = version,
+            idx = idx,
+            total = total,
+            tier = tier,
+            algo = algo,
+        );
+        // Emit canonical CRLF for DOS regardless of how dkbanner.txt (via
+        // include_str!) was checked out. `str::lines()` splits on both \n and
+        // \r\n, so a CRLF checkout won't produce doubled carriage returns.
+        let mut banner = banner_raw.lines().collect::<Vec<_>>().join("\r\n");
+        banner.push_str("\r\n");
+        fs::write(work_path.join("DKBANNER.TXT"), banner).expect("write banner");
+
         // dosbox.conf with a REAL display (no SDL_VIDEODRIVER=dummy, no
-        // -nogui). The autoexec prints a DOSKrunch banner, runs the SFX,
+        // -nogui). The autoexec shows the DOSKrunch banner, runs the SFX,
         // lists what landed, then PAUSEs so the window stays up to read.
-        // The banner art uses only DOS-echo-safe characters (no | < > & %).
         let conf_path = work_path.join("dosbox.conf");
         fs::write(
             &conf_path,
@@ -177,17 +205,13 @@ fn watch_sfx_extract_in_dosbox() {
                     "mount c \"{mount}\"\n",
                     "c:\n",
                     "cls\n",
+                    "type DKBANNER.TXT\n",
+                    "del DKBANNER.TXT\n",
                     "echo.\n",
-                    "echo   ===============================================\n",
-                    "echo      [#####]   D O S K r u n c h   {version}\n",
-                    "echo      squeeze it down, run it on real DOS\n",
-                    "echo   ===============================================\n",
-                    "echo      tier {idx} of {total}:  {tier}        algo:  {algo}\n",
-                    "echo.\n",
-                    "echo   unpacking...\n",
+                    "echo   unpacking {algo} archive...\n",
                     "OUT.EXE\n",
                     "echo.\n",
-                    "echo   --- crunched files now on C: ---\n",
+                    "echo   done -- crunched files now on drive C:\n",
                     "dir /w\n",
                     "echo.\n",
                     "pause\n",
@@ -195,10 +219,6 @@ fn watch_sfx_extract_in_dosbox() {
                 ),
                 cputype = cputype,
                 mount = work_path.display(),
-                version = version,
-                idx = idx,
-                total = total,
-                tier = tier,
                 algo = algo,
             ),
         )
