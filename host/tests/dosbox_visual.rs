@@ -157,7 +157,7 @@ fn watch_sfx_extract_in_dosbox() {
         eprintln!("[{idx}/{total}] {algo}/{tier}: {sfx_size} bytes — opening DOSBox-X window...");
 
         // dosbox.conf with a REAL display (no SDL_VIDEODRIVER=dummy, no
-        // -nogui). The autoexec prints a doskrunch banner, runs the SFX,
+        // -nogui). The autoexec prints a DOSKrunch banner, runs the SFX,
         // lists what landed, then PAUSEs so the window stays up to read.
         // The banner art uses only DOS-echo-safe characters (no | < > & %).
         let conf_path = work_path.join("dosbox.conf");
