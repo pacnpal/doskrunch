@@ -309,20 +309,19 @@ static int validate_name(const char *s, unsigned slen)
 #ifdef DKRUNCH_BENCH_TICKS
 /* Benchmark harness marker payload: BENCH_PA.BIN (8.3-mangled form of
  * bench_payload.bin). Used only to gate optional perf sidecar output
- * in benchmark runs so normal extraction doesn't create extra files. */
+ * in benchmark runs so normal extraction doesn't create extra files.
+ * Matches the FULL 8.3 name case-insensitively (stem AND .BIN extension),
+ * so neither "BENCH_PA2" nor "BENCH_PA.TXT" trips perf_mode. */
 static int is_bench_payload_name(const char *s)
 {
-    static const char BENCH[] = "BENCH_PA";
-    unsigned i = 0;
-    while (s[i] != '\0' && s[i] != '.' && i < sizeof(BENCH) - 1) {
+    static const char BENCH[] = "BENCH_PA.BIN";
+    unsigned i;
+    for (i = 0; i < sizeof(BENCH) - 1; i++) {
         char c = s[i];
         if (c >= 'a' && c <= 'z') c = (char)(c - 32);
         if (c != BENCH[i]) return 0;
-        i++;
     }
-    /* Require the stem to END here (next char is the extension dot or NUL),
-     * so "BENCH_PA2"-style names don't also match the 8-char prefix. */
-    return i == sizeof(BENCH) - 1 && (s[i] == '\0' || s[i] == '.');
+    return s[sizeof(BENCH) - 1] == '\0';
 }
 #endif /* DKRUNCH_BENCH_TICKS */
 

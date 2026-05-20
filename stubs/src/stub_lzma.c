@@ -171,19 +171,18 @@ static u32 tick_delta(u32 t0, u32 t1)
 }
 
 /* BENCH_PA.BIN (8.3 form of bench_payload.bin) gates the perf sidecar so a
- * normal extraction doesn't repeat-decode or write DKPERF.BIN. */
+ * normal extraction doesn't repeat-decode or write DKPERF.BIN. Matches the
+ * FULL 8.3 name case-insensitively (stem AND .BIN extension). */
 static int is_bench_payload_name(const char *s)
 {
-    static const char BENCH[] = "BENCH_PA";
-    unsigned i = 0;
-    while (s[i] != '\0' && s[i] != '.' && i < sizeof(BENCH) - 1) {
+    static const char BENCH[] = "BENCH_PA.BIN";
+    unsigned i;
+    for (i = 0; i < sizeof(BENCH) - 1; i++) {
         char c = s[i];
         if (c >= 'a' && c <= 'z') c = (char)(c - 32);
         if (c != BENCH[i]) return 0;
-        i++;
     }
-    /* Require the stem to END here so "BENCH_PA2"-style names don't match. */
-    return i == sizeof(BENCH) - 1 && (s[i] == '\0' || s[i] == '.');
+    return s[sizeof(BENCH) - 1] == '\0';
 }
 #endif /* DKRUNCH_BENCH_TICKS */
 
