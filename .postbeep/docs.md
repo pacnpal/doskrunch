@@ -149,6 +149,11 @@ Useful flags:
 - `--chunk-size <bytes>`: per-chunk uncompressed size, default 16 KiB. Caps at
   16 KiB for `aplib`, `lzma`, and `lzsa2` (the stub's BSS budget) and 65535 for
   `stored`.
+- `--no-recurse`: for directory inputs, pack only each directory's immediate
+  files (no subdirectories). Same as `--max-depth 1`.
+- `--max-depth <N>`: limit directory recursion depth, find(1) style (1 =
+  immediate files only, 2 = one level of subdirectories). Default: unlimited.
+  Conflicts with `--no-recurse`.
 - `--preserve-timestamps`: keep source mtimes instead of the default
   reproducible-build behavior (zeroed timestamps).
 
