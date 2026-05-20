@@ -165,8 +165,8 @@ fn watch_sfx_extract_in_dosbox() {
         // Write the banner as a text file and `TYPE` it in DOS, rather than
         // echo it: a file is printed literally, so the figlet logo (which
         // uses | \ /) renders without DOS treating | as a pipe. CRLF line
-        // endings keep DOS `type` happy. DKBANNER.TXT is 8.3-clean and gets
-        // del'd before the `dir` so it doesn't show among the extracted files.
+        // endings keep DOS `type` happy. DKBANNER.TXT is 8.3-clean and is
+        // del'd right after `type` so it isn't left on the extracted drive.
         let banner_raw = format!(
             "{LOGO}\n\n   {version}   -   squeeze it down, run it on real DOS\n   \
              tier {idx} of {total}:   {tier}        algo:   {algo}",
