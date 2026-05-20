@@ -17,7 +17,7 @@ below are typed as `doskrunch ...`. "DOSKrunch" is the project's stylized name.
 
 For most DOS machines, use the defaults. No flags:
 
-```
+```bash
 doskrunch pack out.exe files/
 ```
 
@@ -60,14 +60,14 @@ it.
 Needs a recent Rust toolchain from <https://rustup.rs>. Same on Linux, macOS,
 and Windows:
 
-```
+```bash
 cargo install --git https://github.com/pacnpal/doskrunch --locked
 ```
 
 Cargo installs `doskrunch` into `~/.cargo/bin` (on Windows,
 `%USERPROFILE%\.cargo\bin`), which rustup already put on your `PATH`. Check it:
 
-```
+```bash
 doskrunch --help
 ```
 
@@ -80,7 +80,7 @@ and x86_64 for Intel Macs), and Windows (x86_64).
 
 On Linux:
 
-```
+```bash
 tar xzf doskrunch-*-linux-*.tar.gz
 chmod +x doskrunch
 sudo mv doskrunch /usr/local/bin/
@@ -89,7 +89,7 @@ doskrunch --help
 
 On macOS (Gatekeeper quarantines downloaded binaries, so clear it once):
 
-```
+```bash
 tar xzf doskrunch-*-macos-*.tar.gz
 chmod +x doskrunch
 xattr -d com.apple.quarantine doskrunch 2>/dev/null || true
@@ -100,7 +100,7 @@ doskrunch --help
 On Windows, unzip the archive and run it from that folder, or move
 `doskrunch.exe` into a folder on your `PATH`:
 
-```
+```powershell
 doskrunch.exe --help
 ```
 
@@ -154,7 +154,7 @@ Useful flags:
 
 Pack a directory with the safe defaults, then inspect and host-extract it:
 
-```
+```bash
 doskrunch pack out.exe README.md src/
 doskrunch inspect out.exe
 doskrunch unpack out.exe -d extracted/
@@ -162,13 +162,13 @@ doskrunch unpack out.exe -d extracted/
 
 Tighter compression for a 386 or better:
 
-```
+```bash
 doskrunch pack --algo lzma --target 386 setup.exe big-payload/
 ```
 
 Fastest unpacking on a real 4.77 MHz 8088:
 
-```
+```bash
 doskrunch pack --algo lzsa2 --target 8086 fast.exe app/
 ```
 
