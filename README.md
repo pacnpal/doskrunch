@@ -11,6 +11,23 @@ Built because nothing on the market produces CPU-tier-targeted DOS SFXs from a
 modern host. The result is a single static binary you `cargo install` once and
 keep around for whenever you need to ship something to a vintage box.
 
+## TL;DR — what should I use?
+
+**For most DOS machines, use the defaults — no flags:**
+
+```bash
+doskrunch pack out.exe files/
+```
+
+That's **aPLib compression on the `8086` target: the best, most compatible
+choice.** It runs on *every* DOS machine, from the 1981 IBM PC/8088 right up to
+a Pentium III, and still compresses well. If you're not sure, this is the answer.
+
+Only pick something else for a specific reason — fastest unpacking on a 4.77 MHz
+8088 (`--algo lzsa2`), the smallest possible file on a 386+ (`--algo lzma`), or a
+known newer CPU. See [Which options should I use?](#which-options-should-i-use)
+for the full rundown, and [Install](#install) for per-platform setup.
+
 ## Install
 
 DOSKrunch is a single self-contained binary named `doskrunch`. There are two ways to get it.
