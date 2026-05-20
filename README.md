@@ -13,14 +13,14 @@ keep around for whenever you need to ship something to a vintage box.
 
 ## Install
 
-DOSKrunch is a single self-contained binary named `doskrunch`. Two ways to get it.
+DOSKrunch is a single self-contained binary named `doskrunch`. There are two ways to get it.
 
 ### Option A — build with Cargo (any platform)
 
-Needs a [Rust toolchain](https://rustup.rs) (1.74+). Works the same on Linux, macOS, and Windows:
+Needs a recent [Rust toolchain](https://rustup.rs) (install via rustup). Works the same on Linux, macOS, and Windows:
 
 ```bash
-cargo install --git https://github.com/pacnpal/doskrunch
+cargo install --git https://github.com/pacnpal/doskrunch --locked
 ```
 
 Cargo drops the `doskrunch` binary in `~/.cargo/bin` (Windows: `%USERPROFILE%\.cargo\bin`), which rustup already put on your `PATH`. Verify:

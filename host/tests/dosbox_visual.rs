@@ -170,7 +170,9 @@ fn watch_sfx_extract_in_dosbox() {
         let banner_raw = format!(
             "{LOGO}\n\n   {version}   -   squeeze it down, run it on real DOS\n   \
              tier {idx} of {total}:   {tier}        algo:   {algo}",
-            LOGO = LOGO,
+            // trim_end so the logo file's trailing newline doesn't add an
+            // extra blank line before the version/tier text.
+            LOGO = LOGO.trim_end(),
             version = version,
             idx = idx,
             total = total,
