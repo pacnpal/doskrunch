@@ -139,7 +139,7 @@ fn benchmark_tier_decompression() {
     let work = tempfile::tempdir().expect("create tempdir");
     let work_path = work.path();
 
-    // One payload file for all three tiers — the same input bytes get
+    // One payload file for all eight tiers — the same input bytes get
     // packed by each --target to keep the per-tier compressed size
     // comparable. (The bytes are the same; the embedded stub differs.)
     let payload = synthesize_payload();
@@ -407,8 +407,10 @@ fn benchmark_mmx_speedup() {
         let bench_sfx_path = work_path.join("BENCH.EXE");
         fs::write(&bench_sfx_path, &bench_sfx).expect("write bench sfx");
 
-        // Run with DOS stdout redirected to BENCH_OUT.TXT so the host can
-        // read the DKBENCH line after DOSBox exits.
+        // Run with DOS stdout redirected to DKBENCH.TXT so the host can
+        // read the DKBENCH line after DOSBox exits. The name is a valid 8.3
+        // stem (7 chars + ".TXT"), so DOS writes it verbatim — no 8.3
+        // truncation (BENCH_OUT -> BENCH_OU) or `~1` mangling to chase.
         let mut min_ticks: u64 = u64::MAX;
         for run in 0..RUNS_PER_TIER {
             let rundir = tempfile::tempdir().expect("rundir");
@@ -435,7 +437,7 @@ fn benchmark_mmx_speedup() {
                         "[autoexec]\n",
                         "mount c \"{mount}\"\n",
                         "c:\n",
-                        "BENCH.EXE > BENCH_OUT.TXT\n",
+                        "BENCH.EXE > DKBENCH.TXT\n",
                         "exit\n",
                     ),
                     cputype = cputype,
@@ -462,13 +464,11 @@ fn benchmark_mmx_speedup() {
                 }
             }
 
-            // Read the bench output file. DOSBox-X maps `>` to a file in the
-            // mounted directory; the file will be named BENCH_OUT.TXT (or
-            // BENCH_O~1.TXT if 8.3 mangling is aggressive — use
-            // locate_case_insensitive).
-            let bench_out = locate_case_insensitive(rundir_path, "BENCH_OUT.TXT")
-                .or_else(|| locate_case_insensitive(rundir_path, "BENCH_O~1.TXT"))
-                .expect("BENCH_OUT.TXT not found after DOSBox run");
+            // Read the bench output file. The redirect target DKBENCH.TXT is
+            // a valid 8.3 name, so DOSBox-X writes it without truncation; the
+            // case-insensitive lookup is enough to find it on any host FS.
+            let bench_out = locate_case_insensitive(rundir_path, "DKBENCH.TXT")
+                .expect("DKBENCH.TXT not found after DOSBox run");
             let bench_text = fs::read_to_string(&bench_out).expect("read bench output");
 
             // Parse "DKBENCH:decode_ticks=N"
