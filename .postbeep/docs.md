@@ -127,7 +127,8 @@ The command arguments are identical on every platform. Windows users type
 - `486`: `BSWAP` and better instruction scheduling.
 - `pentium`: U/V pipe pairing.
 - `pentium-mmx`: MMX-accelerated match copy in the aplib depacker.
-- `p2`: Pentium Pro / P6 codegen plus the MMX baseline.
+- `p2`: Pentium II (P6 out-of-order core) plus the MMX baseline, so a p2
+  build needs MMX (it won't run on a Pentium Pro).
 - `p3`: SSE-accelerated aPLib match copy.
 
 ## Commands
