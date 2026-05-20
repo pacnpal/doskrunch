@@ -50,9 +50,10 @@ const ALL_TIERS: &[&str] = &[
     "p3",
 ];
 
-/// doskrunch version for the banner: prefer the latest release tag (what
-/// `git describe --tags` reports), fall back to the crate version when the
-/// tree has no tags yet.
+/// DOSKrunch version for the banner: prefer the most recent tag reachable
+/// from HEAD (what `git describe --tags --abbrev=0` reports — releases are
+/// tagged, so in practice this is the release version), falling back to the
+/// crate version when the tree has no tags yet.
 fn doskrunch_version() -> String {
     let raw = Command::new("git")
         .args(["describe", "--tags", "--abbrev=0"])
