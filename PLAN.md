@@ -1,4 +1,4 @@
-# doskrunch: DOS Self-Extracting EXE Builder
+# DOSKrunch: DOS Self-Extracting EXE Builder
 
 A cross-platform CLI that produces self-extracting DOS .EXE/.COM files from arbitrary input files, using modern compression algorithms with hand-tuned decompressors for every x86 CPU tier from the original 8088 up to Pentium III.
 
