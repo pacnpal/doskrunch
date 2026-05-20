@@ -5,7 +5,7 @@ slug     = "doskrunch"
 name     = "DOSKrunch"
 tagline  = "Packs files into self-extracting DOS .EXE archives, tuned per CPU."
 category = "vintage_pc"
-status   = "beta"
+status   = "stable"
 license  = "MIT"
 github   = "pacnpal/doskrunch"
 

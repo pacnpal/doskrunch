@@ -7,8 +7,8 @@ unpacks itself. No DOS-side tooling, no separate archiver on the target.
 The part that does not exist anywhere else: the decompressor stub is built for
 the CPU you are aiming at. Pick a target from the original 8086 up to a Pentium
 III and DOSKrunch ports in a depacker that uses what that chip actually has
-(32-bit real-mode registers on a 386, `BSWAP` on a 486, MMX on a Pentium MMX,
-an SSE match-copy on a Pentium III). Everything still runs in 16-bit real mode.
+(32-bit real-mode registers on a 386, `BSWAP` on a 486, and an MMX block copy
+from the Pentium MMX up). Everything still runs in 16-bit real mode.
 
 The CLI binary and crate are named `doskrunch` (lowercase), so the commands
 below are typed as `doskrunch ...`. "DOSKrunch" is the project's stylized name.
@@ -129,7 +129,9 @@ The command arguments are identical on every platform. Windows users type
 - `pentium-mmx`: MMX-accelerated match copy in the aplib depacker.
 - `p2`: Pentium II (P6 out-of-order core) plus the MMX baseline, so a p2
   build needs MMX (it won't run on a Pentium Pro).
-- `p3`: SSE-accelerated aPLib match copy.
+- `p3`: Pentium III; P6 codegen with the same MMX depacker as `p2`. (An SSE
+  depacker variant exists but is deferred pending real-hardware testing, so the
+  shipped `p3` stub is MMX-based.)
 
 ## Commands
 

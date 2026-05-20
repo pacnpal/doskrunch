@@ -126,7 +126,7 @@ doskrunch unpack out.exe -d extracted/
 | `pentium`       | U/V pipe pairing. |
 | `pentium-mmx`   | MMX-accelerated match copy in the aplib depacker. |
 | `p2`            | Pentium II (P6 out-of-order core) + MMX baseline; a `p2` build needs MMX. |
-| `p3`            | SSE-accelerated aPLib match-copy path (MOVUPS 16-byte blocks when match offset and length are both >= 16). |
+| `p3`            | P6 codegen + the MMX depacker (same as `p2`). An SSE depacker variant exists on disk but is deferred, so the shipped `p3` stub is MMX-based. |
 
 LZMA requires `--target 386` or higher. The CLI refuses `--algo lzma --target
 8086` (or `286`) with a clear error. Everything else works on every tier.
