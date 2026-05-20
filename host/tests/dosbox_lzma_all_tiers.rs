@@ -19,13 +19,9 @@ use std::process::Command;
 use std::time::Duration;
 
 mod common;
-use common::{locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
+use common::{fixtures, locate_case_insensitive, repo_root, wait_with_timeout, WaitError};
 
 const DOSBOX_TIMEOUT: Duration = Duration::from_secs(180);
-
-fn fixtures() -> &'static [&'static str] {
-    &["hello.txt", "numbers.txt", "random.bin", "empty.bin"]
-}
 
 #[test]
 #[ignore = "needs dosbox-x installed; run with `cargo test -- --ignored`"]
