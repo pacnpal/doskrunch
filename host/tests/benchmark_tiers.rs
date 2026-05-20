@@ -183,16 +183,18 @@ fn benchmark_tier_decompression() {
         let bench_sfx_path = work_path.join(format!("BENCH_{tier}.EXE"));
         build_bench_sfx(&sfx_path, &bench_blob_path, &bench_sfx_path);
 
-        // dosbox-x needs the SFX named on an 8.3 path inside the mount.
-        // We rename per-run so each tier's run-dir is independent.
-        let mut runs_ms: Vec<u128> = Vec::with_capacity(RUNS_PER_TIER);
-        let mut decode_ticks_runs: Vec<u32> = Vec::with_capacity(RUNS_PER_TIER);
-        for run in 0..RUNS_PER_TIER {
+        // Two runs per iteration, deliberately on different blobs:
+        //   * wall-clock is measured on the PRODUCTION (shipped) SFX, so it
+        //     reflects real user-visible extraction time. Running the bench
+        //     blob here would inflate it (8x repeat-decode + DKPERF write).
+        //   * decode ticks come from the BENCH SFX (the only blob that emits
+        //     DKPERF.BIN). Both runs verify the extracted payload.
+        // `run_sfx` sets up an isolated run-dir, runs DOSBox-X at this tier's
+        // cputype, asserts a clean exit, and returns (elapsed_ms, run-dir).
+        let run_sfx = |sfx_src: &Path, run: usize| -> (u128, tempfile::TempDir) {
             let rundir = tempfile::tempdir().expect("rundir");
             let rundir_path = rundir.path();
-            let runsfx = rundir_path.join("OUT.EXE");
-            fs::copy(&bench_sfx_path, &runsfx).expect("copy sfx into rundir");
-
+            fs::copy(sfx_src, rundir_path.join("OUT.EXE")).expect("copy sfx into rundir");
             let conf_path = rundir_path.join("dosbox.conf");
             fs::write(
                 &conf_path,
@@ -227,33 +229,41 @@ fn benchmark_tier_decompression() {
                 .env("SDL_VIDEODRIVER", "dummy")
                 .spawn()
                 .expect("spawn dosbox-x");
-            let dosbox_status = match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
-                Ok(s) => s,
-                Err(WaitError::Timeout) => panic!(
-                    "dosbox-x did not exit within {DOSBOX_TIMEOUT:?} (tier {tier} run {run}); child was killed"
-                ),
-                Err(WaitError::Wait(e)) => panic!(
-                    "waiting on dosbox-x failed: {e} (tier {tier} run {run}); child was killed"
-                ),
-            };
-            assert!(
-                dosbox_status.success(),
-                "dosbox-x exited non-zero for tier {tier} run {run}: {dosbox_status:?}"
-            );
-            let elapsed = started.elapsed().as_millis();
-            runs_ms.push(elapsed);
-            let decode_ticks = read_perf_ticks_file(rundir_path, tier, run);
-            decode_ticks_runs.push(decode_ticks);
+            match wait_with_timeout(&mut dosbox, DOSBOX_TIMEOUT) {
+                Ok(s) => assert!(s.success(), "dosbox-x non-zero (tier {tier} run {run})"),
+                Err(WaitError::Timeout) => {
+                    panic!("dosbox-x timeout {DOSBOX_TIMEOUT:?} (tier {tier} run {run})")
+                }
+                Err(WaitError::Wait(e)) => {
+                    panic!("dosbox-x wait error: {e} (tier {tier} run {run})")
+                }
+            }
+            (started.elapsed().as_millis(), rundir)
+        };
 
-            // Sanity check: the extracted payload must match the input
-            // exactly. We verify on every run so a flaky depacker can't
-            // hide behind aggregate timing.
+        let verify_extracted = |rundir_path: &Path, tier: &str, run: usize| {
             let extracted = locate_case_insensitive(rundir_path, "BENCH_PAYLOAD.BIN")
                 .or_else(|| locate_case_insensitive(rundir_path, "BENCH_PA.BIN"))
                 .expect("locate extracted payload");
             let body = fs::read(&extracted).expect("read extracted");
-            assert_eq!(body.len(), payload.len(), "size mismatch tier {tier}");
-            assert!(body == payload, "byte mismatch tier {tier}");
+            assert!(
+                body.as_slice() == payload.as_slice(),
+                "extracted payload mismatch (tier {tier} run {run})"
+            );
+        };
+
+        let mut runs_ms: Vec<u128> = Vec::with_capacity(RUNS_PER_TIER);
+        let mut decode_ticks_runs: Vec<u32> = Vec::with_capacity(RUNS_PER_TIER);
+        for run in 0..RUNS_PER_TIER {
+            // Production SFX → wall-clock + correctness.
+            let (elapsed, prod_dir) = run_sfx(&sfx_path, run);
+            runs_ms.push(elapsed);
+            verify_extracted(prod_dir.path(), tier, run);
+
+            // Bench SFX → isolated decode ticks + correctness.
+            let (_bench_ms, bench_dir) = run_sfx(&bench_sfx_path, run);
+            decode_ticks_runs.push(read_perf_ticks_file(bench_dir.path(), tier, run));
+            verify_extracted(bench_dir.path(), tier, run);
         }
         let decode_ticks_min = *decode_ticks_runs.iter().min().unwrap();
         let wall_clock_min_ms = *runs_ms.iter().min().unwrap();
@@ -513,7 +523,7 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     ));
     md.push_str("Measurement setup:\n\n");
     md.push_str("* Isolated decode time: a bench-only stub blob (built with `make bench`, never shipped) wraps each depack call (`aplib_depack` / `lzsa2_depack`, or the LZMA decode in the lzma stub) with `INT 1Ah` (`AH=00h`). When the `BENCH_PA` marker payload is present it repeats each chunk's decode 8× to overcome `INT 1Ah`'s coarse resolution, and writes the **accumulated** ticks across all chunks and repeats to `DKPERF.BIN` (little-endian `u32`). So DKPERF values are sums, not per-call times — only ratios between tiers/algos are meaningful. The harness swaps this blob onto the packed archive for the timed run, so the shipped stubs carry no instrumentation. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
-    md.push_str("* End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs.\n");
+    md.push_str("* End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs, measured on the **shipped** (uninstrumented) SFX — a separate run from the decode-tick measurement so the 8x repeat-decode never inflates it.\n");
     md.push_str("* Benchmark gating: `#[ignore]` AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file.\n\n");
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
     md.push_str("## Isolated aPLib decode time (INT 1Ah ticks)\n\n");
@@ -580,7 +590,8 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
            single sub-second decode crossing midnight is astronomically unlikely, but the \
            arithmetic is correct regardless.\n\
          * Wall-clock and decode-time are both useful: the decode ratio tracks `aplib_depack` \
-           itself; wall-clock still reflects user-visible elapsed time including DOS startup and \
+           itself (from the bench SFX); wall-clock is measured on a separate run of the shipped \
+           SFX, so it reflects real user-visible elapsed time including DOS startup and \
            INT 21h file I/O.\n\
          * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI never \
            sets `DOSKRUNCH_RUN_BENCHMARK=1`, so its `--ignored` run skips this test via the \

@@ -320,7 +320,9 @@ static int is_bench_payload_name(const char *s)
         if (c != BENCH[i]) return 0;
         i++;
     }
-    return i == sizeof(BENCH) - 1;
+    /* Require the stem to END here (next char is the extension dot or NUL),
+     * so "BENCH_PA2"-style names don't also match the 8-char prefix. */
+    return i == sizeof(BENCH) - 1 && (s[i] == '\0' || s[i] == '.');
 }
 #endif /* DKRUNCH_BENCH_TICKS */
 

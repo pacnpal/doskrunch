@@ -411,13 +411,13 @@ ships per-tier LZMA blobs at 386 through p3.
   code-quality question.
 - LZMA-vs-aPLib decompression-time gate from PLAN.md §10 ("LZMA
   decompression on 386 tier completes within 10x the aPLib
-  decompression time on the same payload"). Same noisy-substrate
-  concern as the Phase 3 perf gate; the multi-chunk LZMA gate
-  finishes in ~170 s (aPLib finishes in ~50 s) across 6 tiers,
-  so the per-tier ratio is in the right ballpark, but cleanly
-  isolating LZMA decode time from DOS startup + INT 21h overhead
-  needs stub-side INT 1Ah cycle-counter instrumentation that the
-  Phase 3 row defers.
+  decompression time on the same payload"). Now landed: stub_lzma.c
+  has `DKRUNCH_BENCH_TICKS` INT 1Ah timing, `make bench` builds the
+  `lzma_*_bench.bin` blobs, and `benchmark_lzma_vs_aplib` in
+  `host/tests/benchmark_tiers.rs` reports the isolated LZMA-vs-aPLib
+  decode-tick ratio at 386/pentium. Run it with `make bench` +
+  `DOSKRUNCH_RUN_BENCHMARK=1`; DOSBox-X remains a noisy substrate so
+  the result is recorded, not asserted.
 - Phase 3 perf-gate row (386 / pentium aplib speedup): now measured
   with isolated decode timing and documented as "not met" in
   `tests/benchmarks/results.md`.

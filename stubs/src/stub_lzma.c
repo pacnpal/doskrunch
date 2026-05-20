@@ -182,7 +182,8 @@ static int is_bench_payload_name(const char *s)
         if (c != BENCH[i]) return 0;
         i++;
     }
-    return i == sizeof(BENCH) - 1;
+    /* Require the stem to END here so "BENCH_PA2"-style names don't match. */
+    return i == sizeof(BENCH) - 1 && (s[i] == '\0' || s[i] == '.');
 }
 #endif /* DKRUNCH_BENCH_TICKS */
 
