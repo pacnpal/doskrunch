@@ -3,7 +3,7 @@
 //! Unlike the headless `dosbox_*` correctness gates (which set
 //! `SDL_VIDEODRIVER=dummy` and assert byte-identical extraction), this
 //! one opens REAL DOSBox-X windows so you can watch the SFX extract on
-//! screen, with a little doskrunch banner + version. By default it walks
+//! screen, with a little DOSKrunch banner + version. By default it walks
 //! every CPU tier valid for the chosen algo, one window per tier; press a
 //! key at the DOS `PAUSE` in each window to advance to the next.
 //!
@@ -54,19 +54,28 @@ const ALL_TIERS: &[&str] = &[
 /// `git describe --tags` reports), fall back to the crate version when the
 /// tree has no tags yet.
 fn doskrunch_version() -> String {
-    let tag = Command::new("git")
+    let raw = Command::new("git")
         .args(["describe", "--tags", "--abbrev=0"])
         .current_dir(repo_root())
-        .output();
-    if let Ok(out) = tag {
-        if out.status.success() {
-            let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !t.is_empty() {
-                return t;
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| format!("v{} (untagged)", env!("CARGO_PKG_VERSION")));
+    // This is interpolated into DOS `echo` lines, and a tag name is
+    // otherwise free-form. Strip anything that isn't a safe printable so
+    // a weird tag can't inject DOS metacharacters (| < > & ^ %) into the
+    // generated dosbox.conf.
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || " ._()+-".contains(c) {
+                c
+            } else {
+                '_'
             }
-        }
-    }
-    format!("v{} (untagged)", env!("CARGO_PKG_VERSION"))
+        })
+        .collect()
 }
 
 /// Is `algo` valid on `tier`? Only LZMA is restricted (386+).
@@ -87,6 +96,15 @@ fn watch_sfx_extract_in_dosbox() {
     }
 
     let algo = std::env::var("DOSKRUNCH_VISUAL_ALGO").unwrap_or_else(|_| "aplib".to_string());
+    // Allowlist the algo: it's interpolated into the dosbox.conf banner, and
+    // this guarantees it's one of the known-safe literals (no DOS
+    // metacharacters can reach the config). `tier` is likewise validated by
+    // `cputype_for`, and `version` is sanitized in `doskrunch_version`.
+    const ALGOS: &[&str] = &["aplib", "stored", "lzma", "lzsa2"];
+    assert!(
+        ALGOS.contains(&algo.as_str()),
+        "unknown DOSKRUNCH_VISUAL_ALGO {algo:?}; expected one of {ALGOS:?}"
+    );
     let version = doskrunch_version();
 
     // Which tiers to walk: a single one if DOSKRUNCH_VISUAL_TARGET is set,

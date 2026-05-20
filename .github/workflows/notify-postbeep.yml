@@ -53,6 +53,13 @@ jobs:
           REF:     ${{ github.sha }}
           REASON:  ${{ github.event_name }}
         run: |
+          # Skip cleanly (not a red run) when the dispatch PAT isn't
+          # configured — e.g. on a fork, or before the secret is set up —
+          # so the repo doesn't accumulate noisy failed Actions runs.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "POSTBEEP_DISPATCH_PAT secret not set; skipping POSTBEEP.NET dispatch."
+            exit 0
+          fi
           # gh CLI is preinstalled on ubuntu-latest. Build the payload
           # with jq so values are JSON-encoded safely (a tag like
           # `v1.0"weird"` would otherwise corrupt a string-interpolated
