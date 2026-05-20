@@ -167,17 +167,21 @@ fn watch_sfx_extract_in_dosbox() {
         // uses | \ /) renders without DOS treating | as a pipe. CRLF line
         // endings keep DOS `type` happy. DKBANNER.TXT is 8.3-clean and gets
         // del'd before the `dir` so it doesn't show among the extracted files.
-        let banner = format!(
+        let banner_raw = format!(
             "{LOGO}\n\n   {version}   -   squeeze it down, run it on real DOS\n   \
-             tier {idx} of {total}:   {tier}        algo:   {algo}\n",
+             tier {idx} of {total}:   {tier}        algo:   {algo}",
             LOGO = LOGO,
             version = version,
             idx = idx,
             total = total,
             tier = tier,
             algo = algo,
-        )
-        .replace('\n', "\r\n");
+        );
+        // Emit canonical CRLF for DOS regardless of how dkbanner.txt (via
+        // include_str!) was checked out. `str::lines()` splits on both \n and
+        // \r\n, so a CRLF checkout won't produce doubled carriage returns.
+        let mut banner = banner_raw.lines().collect::<Vec<_>>().join("\r\n");
+        banner.push_str("\r\n");
         fs::write(work_path.join("DKBANNER.TXT"), banner).expect("write banner");
 
         // dosbox.conf with a REAL display (no SDL_VIDEODRIVER=dummy, no
