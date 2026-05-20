@@ -59,6 +59,13 @@ const RUNS_PER_TIER: usize = 3;
 /// Payload size — matches PLAN.md §10 Phase 3.
 const PAYLOAD_SIZE: usize = 500 * 1024;
 
+/// Smaller payload for `benchmark_lzma_vs_aplib`. LZMA decode under 386
+/// emulation is slow, and the bench stub repeats each chunk's decode 8x;
+/// at the full 500 KiB a single 386 run blows the 300s DOSBox-X timeout.
+/// 64 KiB still spends seconds in the decoder (hundreds of INT 1Ah ticks,
+/// fine resolution) while finishing comfortably under the timeout.
+const LZMA_BENCH_PAYLOAD_SIZE: usize = 64 * 1024;
+
 /// Synthesize a deterministic mixed-content payload. The byte
 /// distribution is intentionally non-random so that aPLib actually
 /// compresses it (random data is incompressible by construction and
@@ -70,28 +77,37 @@ const PAYLOAD_SIZE: usize = 500 * 1024;
 ///   * 512–768:  pseudo-random binary from a deterministic LCG
 ///   * 768–1024: repeated 16-byte pattern (AAAA…BBBB…CCCC…)
 fn synthesize_payload() -> Vec<u8> {
+    synthesize_payload_sized(PAYLOAD_SIZE)
+}
+
+/// Same deterministic mixed content as `synthesize_payload`, at an
+/// arbitrary `size`. The content cycles through all four types every
+/// 1 KiB, so any size ≥ 1 KiB is still "mixed". Used by
+/// `benchmark_lzma_vs_aplib`, which needs a much smaller payload than the
+/// 500 KiB tier benchmark (see that test for why).
+fn synthesize_payload_sized(size: usize) -> Vec<u8> {
     let text = b"doskrunch phase 3 benchmark payload\n";
-    let mut out = Vec::with_capacity(PAYLOAD_SIZE);
+    let mut out = Vec::with_capacity(size);
     let mut lcg: u32 = 0xDECAFBAD;
-    while out.len() < PAYLOAD_SIZE {
+    while out.len() < size {
         // 256 bytes of ASCII text
         for i in 0..256 {
             out.push(text[i % text.len()]);
-            if out.len() == PAYLOAD_SIZE {
+            if out.len() == size {
                 return out;
             }
         }
         // 256 bytes of zeros
-        let zeros_take = (PAYLOAD_SIZE - out.len()).min(256);
+        let zeros_take = (size - out.len()).min(256);
         out.resize(out.len() + zeros_take, 0);
-        if out.len() == PAYLOAD_SIZE {
+        if out.len() == size {
             return out;
         }
         // 256 bytes of pseudo-random
         for _ in 0..256 {
             lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
             out.push((lcg >> 16) as u8);
-            if out.len() == PAYLOAD_SIZE {
+            if out.len() == size {
                 return out;
             }
         }
@@ -100,7 +116,7 @@ fn synthesize_payload() -> Vec<u8> {
         for _ in 0..16 {
             for _ in 0..16 {
                 out.push(b'A'.wrapping_add(pat_idx % 26));
-                if out.len() == PAYLOAD_SIZE {
+                if out.len() == size {
                     return out;
                 }
             }
@@ -432,10 +448,13 @@ fn benchmark_lzma_vs_aplib() {
     let blobs_dir = root.join("stubs").join("blobs");
     let bin = env!("CARGO_BIN_EXE_doskrunch");
 
-    let payload = synthesize_payload();
-    assert_eq!(payload.len(), PAYLOAD_SIZE);
-    let payload_path = root.join("target").join("bench_payload.bin");
-    fs::create_dir_all(payload_path.parent().unwrap()).expect("mkdir target");
+    let payload = synthesize_payload_sized(LZMA_BENCH_PAYLOAD_SIZE);
+    assert_eq!(payload.len(), LZMA_BENCH_PAYLOAD_SIZE);
+    // Write into this test's own tempdir (not target/) so it can't race
+    // benchmark_tier_decompression's 500 KiB bench_payload.bin under cargo's
+    // parallel test runner. The file MUST be named bench_payload.bin so its
+    // 8.3 form is BENCH_PA.BIN — the marker the bench stub looks for.
+    let payload_path = work_path.join("bench_payload.bin");
     fs::write(&payload_path, &payload).expect("write payload");
 
     // Only tiers with BOTH a `make bench` aplib and lzma blob (LZMA is 386+).

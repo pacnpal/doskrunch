@@ -417,7 +417,12 @@ ships per-tier LZMA blobs at 386 through p3.
   `host/tests/benchmark_tiers.rs` reports the isolated LZMA-vs-aPLib
   decode-tick ratio at 386/pentium. Run it with `make bench` +
   `DOSKRUNCH_RUN_BENCHMARK=1`; DOSBox-X remains a noisy substrate so
-  the result is recorded, not asserted.
+  the result is recorded, not asserted. **Measured (64 KiB payload,
+  cycles=auto, min of 3 runs): 386 lzma/aplib ~= 72x, pentium ~= 94x
+  — the "within 10x" expectation is NOT met on the emulator** (LZMA's
+  range coder is far heavier per byte than aPLib, and per-instruction
+  emulation cost amplifies it; real iron would differ). Recorded as
+  "measured, not met on DOSBox-X", same disposition as the Phase 3 row.
 - Phase 3 perf-gate row (386 / pentium aplib speedup): now measured
   with isolated decode timing and documented as "not met" in
   `tests/benchmarks/results.md`.
