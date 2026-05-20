@@ -150,8 +150,8 @@ Reach for a different combination only when you have a concrete need:
 |----------------|------|---------|
 | **Not sure — make it run anywhere** (recommended) | `aplib` + `8086` *(default)* | `doskrunch pack out.exe files/` |
 | Original IBM PC/XT (4.77 MHz 8088), want the *fastest* unpacking | `lzsa2` + `8086` | `doskrunch pack --algo lzsa2 --target 8086 out.exe files/` |
-| 386/486-era machine, want tighter compression | `aplib` + `386` | `doskrunch pack --algo aplib --target 386 out.exe files/` |
-| Pentium-class machine, shipping a large payload, want the *smallest* file | `lzma` + `p2` | `doskrunch pack --algo lzma --target p2 out.exe files/` |
+| Want the *smallest* possible archive, on a 386 or newer | `lzma` + `386` | `doskrunch pack --algo lzma --target 386 out.exe files/` |
+| Running on a 386/486 or later, want *faster* unpacking | `aplib` + that tier | `doskrunch pack --target 486 out.exe files/` |
 | Input is already compressed (`.zip`, `.jpg`, `.mp3`…) | `stored` | `doskrunch pack --algo stored out.exe media/` |
 
 Rules of thumb:

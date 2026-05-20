@@ -28,14 +28,15 @@ machine. If you do not have a specific reason to choose otherwise, stop here.
 
 Pick something else only for a concrete reason:
 
-- Original IBM PC or XT (4.77 MHz 8088), want the fastest unpacking:
+- Fastest unpacking on a 4.77 MHz 8088 (original IBM PC or XT):
   `doskrunch pack --algo lzsa2 --target 8086 out.exe files/`
-- A 386 or 486, want tighter compression:
-  `doskrunch pack --algo aplib --target 386 out.exe files/`
-- A Pentium-class machine, shipping a large payload, want the smallest file:
-  `doskrunch pack --algo lzma --target p2 out.exe files/`
+- Smallest possible archive, on a 386 or newer:
+  `doskrunch pack --algo lzma --target 386 out.exe files/`
 - Input is already compressed (`.zip`, `.jpg`, `.mp3`):
   `doskrunch pack --algo stored out.exe media/`
+- Faster unpacking on a known newer CPU: raise `--target` (for example
+  `--target 486` or `--target pentium`). It speeds up unpacking only; it does
+  not change the archive size.
 
 Rules of thumb:
 
@@ -91,7 +92,7 @@ On macOS (Gatekeeper quarantines downloaded binaries, so clear it once):
 ```
 tar xzf doskrunch-*-macos-*.tar.gz
 chmod +x doskrunch
-xattr -d com.apple.quarantine doskrunch
+xattr -d com.apple.quarantine doskrunch 2>/dev/null || true
 sudo mv doskrunch /usr/local/bin/
 doskrunch --help
 ```
@@ -142,7 +143,9 @@ Useful flags:
 - `--algo {aplib,stored,lzma,lzsa2}`: algorithm, default `aplib`.
 - `--target {8086,286,386,486,pentium,pentium-mmx,p2,p3}`: CPU tier, default
   `8086`.
-- `--chunk-size <bytes>`: per-chunk uncompressed size, default 16 KiB.
+- `--chunk-size <bytes>`: per-chunk uncompressed size, default 16 KiB. Caps at
+  16 KiB for `aplib`, `lzma`, and `lzsa2` (the stub's BSS budget) and 65535 for
+  `stored`.
 - `--preserve-timestamps`: keep source mtimes instead of the default
   reproducible-build behavior (zeroed timestamps).
 
