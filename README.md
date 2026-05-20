@@ -133,10 +133,11 @@ Reach for a different combination only when you have a concrete need:
 | Input is already compressed (`.zip`, `.jpg`, `.mp3`…) | `stored` | `doskrunch pack --algo stored out.exe media/` |
 
 Rules of thumb:
-- Targeting a newer CPU only makes the SFX *faster to unpack* and (for `lzma`) enables
-  a smaller archive — it does **not** make the SFX refuse to run on that CPU's
-  predecessors of the same family, but a `386`-targeted SFX will **not** run on a real
-  8086/286. When in doubt, target lower.
+- An SFX built for a target runs on that CPU **and newer**, never on older ones: a
+  `386`-targeted SFX runs on a 386 and up but **not** on a real 8086/286. Targeting a
+  higher tier only makes unpacking faster (and, for `lzma`, the archive smaller) — it
+  doesn't change correctness on newer CPUs. When in doubt, target lower; `8086` runs
+  everywhere.
 - `lzma` needs `--target 386` or higher (the CLI refuses `8086`/`286` with a clear error).
 - `aplib`, `lzsa2`, and `stored` run on every tier, `8086` through `p3`.
 
