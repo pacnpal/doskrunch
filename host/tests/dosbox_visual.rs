@@ -66,7 +66,7 @@ fn watch_sfx_extract_in_dosbox() {
         .status()
         .expect("spawn doskrunch pack");
     assert!(status.success(), "doskrunch pack failed: {status:?}");
-    let sfx_size = fs::metadata(&sfx_path).map(|m| m.len()).unwrap_or(0);
+    let sfx_size = fs::metadata(&sfx_path).expect("stat packed SFX").len();
     eprintln!("packed {algo}/{target} SFX = {sfx_size} bytes; opening DOSBox-X window...");
 
     // dosbox.conf with a REAL display (no SDL_VIDEODRIVER=dummy, no
