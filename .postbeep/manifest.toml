@@ -1,0 +1,60 @@
+postbeep_schema = 1
+
+[project]
+slug     = "doskrunch"
+name     = "DOSKrunch"
+tagline  = "Packs files into self-extracting DOS .EXE archives, tuned per CPU."
+category = "vintage_pc"
+status   = "beta"
+license  = "MIT"
+github   = "pacnpal/doskrunch"
+
+[directory]
+featured = true
+order    = 20
+nsfw     = false
+
+[description]
+short = "A command-line tool that wraps your files in a self-extracting DOS .EXE, with the decompressor hand-tuned for everything from the original 8088 up to a Pentium III."
+long = """
+**DOSKrunch** takes a pile of files on a modern machine (Linux, macOS, or
+Windows) and emits one self-extracting DOS `.EXE`. Copy it to a vintage box,
+run it, and it unpacks itself. No DOS-side tooling, no separate archiver to
+install on the target.
+
+The part that doesn't exist anywhere else: the decompressor stub is built for
+the CPU you're aiming at. Pick a target from `8086` all the way up to `p3` and
+DOSKrunch ports in a depacker that uses what that chip actually has -- 32-bit
+real-mode registers on a 386, `BSWAP` on a 486, MMX on a Pentium MMX, SSE
+match-copy on a Pentium III.
+
+- Four algorithms: `aplib` (the default; great ratio, ~200-byte stub),
+  `lzsa2` (fastest to decompress on a 4.77 MHz 8088), `lzma` (best ratio,
+  386+ only), and `stored` (no compression).
+- `pack`, `unpack`, and `inspect` -- you can peek inside or extract on the
+  host without booting DOS.
+- One static binary. `cargo install --git`, or grab a prebuilt for Linux,
+  macOS, or Windows from the releases page.
+
+Built because nothing on the market produces CPU-tier-targeted DOS SFXs from
+a modern host.
+"""
+
+[platforms]
+linux   = true
+macos   = true
+windows = true
+docker  = false
+dos     = false
+
+[buttons]
+# Path relative to this manifest. The hub fetches button.gif and stores
+# it alongside the manifest under src/content/projects/<slug>_button.gif.
+"88x31" = "button.gif"
+alt     = "DOSKrunch 88x31 button"
+
+[links]
+docs        = "https://github.com/pacnpal/doskrunch#readme"
+issues      = "https://github.com/pacnpal/doskrunch/issues"
+source      = "https://github.com/pacnpal/doskrunch"
+release_log = "https://github.com/pacnpal/doskrunch/releases"

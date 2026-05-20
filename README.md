@@ -1,8 +1,11 @@
-# doskrunch
+# DOSKrunch
 
-A cross-platform CLI that produces self-extracting DOS .EXE archives. The
-output runs on real DOS, from the original 8088 IBM PC up through a Pentium III,
-with CPU-tier-tuned decompressors hand-ported into the stub.
+DOSKrunch is a cross-platform CLI that produces self-extracting DOS .EXE
+archives. The output runs on real DOS, from the original 8088 IBM PC up through
+a Pentium III, with CPU-tier-tuned decompressors hand-ported into the stub.
+
+(The CLI binary and crate are named `doskrunch` — lowercase — so the commands
+below are typed as `doskrunch …`. "DOSKrunch" is the project's stylized name.)
 
 Built because nothing on the market produces CPU-tier-targeted DOS SFXs from a
 modern host. The result is a single static binary you `cargo install` once and
