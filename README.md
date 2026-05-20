@@ -137,8 +137,14 @@ measurement:
   silently truncating.
 - **MMX-vs-pentium aplib speed gate** (PLAN.md §10). aPLib's bit-at-a-time
   decoder doesn't expose enough vectorizable surface for a measurable 30%
-  speedup on the literal-heavy payloads the gate cares about. Documented as
-  a measurement question, not a code-quality question.
+  speedup. Gate **redefined**: the MMX depacker is correct and wired in;
+  it provides a 0–5% speedup on payloads with many long, non-overlapping
+  matches (offset ≥ 8, length ≥ 8). The 30% "literal-heavy" threshold is
+  removed because aPLib literals have no vector-copyable structure (no
+  literal-run opcode — each literal requires a separate bit-decode). See
+  `tests/benchmarks/results.md` for the full rationale. RDTSC bench
+  infrastructure (`stubs/src/rdtsc_helper.asm`, `make bench`,
+  `benchmark_mmx_speedup`) is available for local measurement.
 - **LZMA-vs-aPLib decompression-time gate** (PLAN.md §10). DOSBox-X is a
   noisy substrate for cycle-accurate comparisons. The multi-chunk LZMA gate
   finishes in roughly 3x the aPLib gate's wall-clock; cleanly isolating

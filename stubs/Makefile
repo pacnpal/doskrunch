@@ -88,7 +88,7 @@ WCC_FLAGS_486    := $(WCC_FLAGS_COMMON) -4
 WCC_FLAGS_P5     := $(WCC_FLAGS_COMMON) -5
 WCC_FLAGS_P6     := $(WCC_FLAGS_COMMON) -6
 
-.PHONY: all clean
+.PHONY: all bench clean
 
 all: \
 	$(OUTDIR)/aplib_8086.bin \
@@ -106,6 +106,22 @@ all: \
 	$(OUTDIR)/lzma_p2.bin \
 	$(OUTDIR)/lzma_p3.bin
 
+# ----- bench target (Phase 5 MMX speedup gate measurement) ---------------
+#
+# Builds RDTSC-instrumented variants of the pentium and pentium-mmx aplib
+# stubs for isolated decode-time measurement. These blobs are NOT shipped
+# in the repo — they are built locally (or in a focused CI job) to run
+# host/tests/benchmark_tiers.rs's `benchmark_mmx_speedup` function.
+#
+# The -DDKRUNCH_BENCH_RDTSC flag enables the rdtsc_lo() timing wrappers
+# around aplib_depack / lzsa2_depack in stub.c and the putu32 + DKBENCH
+# output at end of run. rdtsc_helper.obj provides the RDTSC primitive.
+# Only pentium and pentium-mmx are needed for the MMX gate comparison;
+# add p2/p3 bench variants here when issues #13/#14 land.
+bench: \
+	$(OUTDIR)/aplib_pentium_bench.bin \
+	$(OUTDIR)/aplib_pentium-mmx_bench.bin
+
 # ----- shared NASM .obj rules ------------------------------------------
 # Each depacker .asm is `cpu 8086|386|pentium` and consumed by every
 # tier in its family; the .obj is shared across rules.
@@ -120,6 +136,13 @@ $(SRC)/aplib_depack_p5.obj: $(SRC)/aplib_depack_p5.asm
 	$(NASM) -f obj -o $@ $<
 
 $(SRC)/aplib_depack_mmx.obj: $(SRC)/aplib_depack_mmx.asm
+	$(NASM) -f obj -o $@ $<
+
+# rdtsc_helper.obj: RDTSC cycle-counter primitive for pentium+ bench builds.
+# Linked only into the *_bench.bin targets (see the `bench` target below);
+# NOT included in the production blobs. 8086 / 286 / 386 / 486 stubs must
+# not link this — those CPUs predate RDTSC and will fault with #UD.
+$(SRC)/rdtsc_helper.obj: $(SRC)/rdtsc_helper.asm
 	$(NASM) -f obj -o $@ $<
 
 $(SRC)/aplib_depack_sse.obj: $(SRC)/aplib_depack_sse.asm
@@ -483,3 +506,52 @@ $(OUTDIR)/lzma_p3.bin: $(SRC)/stub_lzma_p3.obj $(SRC)/xz_crc32_p6.obj $(SRC)/xz_
 clean:
 	rm -f $(OUTDIR)/*.exe $(OUTDIR)/*.bin
 	rm -f $(SRC)/*.o $(SRC)/*.obj *.o *.obj *.err
+
+# ----- bench blob rules (Phase 5 MMX speedup gate) -----------------------
+#
+# RDTSC-instrumented pentium and pentium-mmx stubs. Built with the
+# -DDKRUNCH_BENCH_RDTSC flag so stub.c wraps depack calls with rdtsc_lo()
+# reads and prints "DKBENCH:decode_ticks=N" after extraction. The host's
+# benchmark_tiers.rs benchmark_mmx_speedup function redirects SFX stdout
+# to a file via DOS redirect and parses the DKBENCH line to get decode-
+# only cycle counts, independent of DOS startup + INT 21h I/O overhead.
+#
+# These blobs are NOT committed or included in the `all` target. Build
+# them locally (or in a focused CI job) before running the bench test:
+#
+#   docker run --rm -v "$PWD/stubs:/work" -w /work doskrunch-watcom make bench
+#   DOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy \
+#     cargo test --test benchmark_tiers -- --ignored --nocapture benchmark_mmx_speedup
+#
+# The bench blobs are gitignored (stubs/blobs/*_bench.bin) so they don't
+# pollute the committed blob set.
+
+$(SRC)/stub_p5_bench.obj: $(SRC)/stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -DDKRUNCH_BENCH_RDTSC -fo=stub_p5_bench.obj stub.c
+
+$(OUTDIR)/aplib_pentium_bench.bin: $(SRC)/stub_p5_bench.obj $(SRC)/aplib_depack_p5.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/rdtsc_helper.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/aplib_pentium_bench.exe \
+	  file $(SRC)/stub_p5_bench.obj \
+	  file $(SRC)/aplib_depack_p5.obj \
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/rdtsc_helper.obj
+	@cp $(OUTDIR)/aplib_pentium_bench.exe $(OUTDIR)/aplib_pentium_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium_bench.bin); \
+	  echo "aplib_pentium_bench.bin: $$SZ bytes (bench blob; not shipped)"
+
+$(SRC)/stub_pmmx_bench.obj: $(SRC)/stub.c
+	cd $(SRC) && $(WCC) $(WCC_FLAGS_P5) -DDKRUNCH_BENCH_RDTSC -fo=stub_pmmx_bench.obj stub.c
+
+$(OUTDIR)/aplib_pentium-mmx_bench.bin: $(SRC)/stub_pmmx_bench.obj $(SRC)/aplib_depack_mmx.obj $(SRC)/lzsa2_depack_32.obj $(SRC)/rdtsc_helper.obj
+	@mkdir -p $(OUTDIR)
+	$(WLINK) option quiet system dos \
+	  name $(OUTDIR)/aplib_pentium-mmx_bench.exe \
+	  file $(SRC)/stub_pmmx_bench.obj \
+	  file $(SRC)/aplib_depack_mmx.obj \
+	  file $(SRC)/lzsa2_depack_32.obj \
+	  file $(SRC)/rdtsc_helper.obj
+	@cp $(OUTDIR)/aplib_pentium-mmx_bench.exe $(OUTDIR)/aplib_pentium-mmx_bench.bin
+	@SZ=$$(stat -c %s $(OUTDIR)/aplib_pentium-mmx_bench.bin); \
+	  echo "aplib_pentium-mmx_bench.bin: $$SZ bytes (bench blob; not shipped)"
