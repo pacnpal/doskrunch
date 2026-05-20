@@ -47,6 +47,13 @@ windows = true
 docker  = false
 dos     = false
 
+[downloads]
+# How much of the GitHub releases the hub mirrors over plain HTTP at
+# http://www.postbeep.net/downloads/doskrunch/<tag>/<file>. "latest"
+# (the default) hosts the newest release; "full" hosts every release.
+# DOSKrunch ships small single-binary release assets, so either is fine.
+release_policy = "latest"
+
 [buttons]
 # Path relative to this manifest. The hub fetches button.gif and stores
 # it alongside the manifest under src/content/projects/<slug>_button.gif.
