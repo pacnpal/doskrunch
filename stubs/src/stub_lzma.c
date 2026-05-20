@@ -161,6 +161,15 @@ static u32 bios_ticks_now(void)
     return ((u32)outregs.x.cx << 16) | (u32)outregs.x.dx;
 }
 
+/* INT 1Ah wraps at MIDNIGHT (0x1800B0 ticks), not 2^32; a plain t1-t0 is
+ * wrong across a rollover. Sub-second decode makes this defensive, but
+ * compute the wrap-correct delta anyway. Mirrors stub.c::tick_delta. */
+#define BIOS_TICKS_PER_DAY 0x1800B0UL
+static u32 tick_delta(u32 t0, u32 t1)
+{
+    return (t1 >= t0) ? (t1 - t0) : (u32)(BIOS_TICKS_PER_DAY - t0 + t1);
+}
+
 /* BENCH_PA.BIN (8.3 form of bench_payload.bin) gates the perf sidecar so a
  * normal extraction doesn't repeat-decode or write DKPERF.BIN. */
 static int is_bench_payload_name(const char *s)
@@ -395,7 +404,7 @@ int main(int argc, char **argv)
                     t0 = bios_ticks_now();
                     ret = xz_dec_microlzma_run(dec, &b);
                     t1 = bios_ticks_now();
-                    lzma_ticks_total += (u32)(t1 - t0);
+                    lzma_ticks_total += tick_delta(t0, t1);
                     if (ret != XZ_STREAM_END) die("lzma decode");
                     if (b.out_pos != usize) die("lzma size");
                 }

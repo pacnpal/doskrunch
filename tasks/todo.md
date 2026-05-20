@@ -133,9 +133,10 @@ Phase ordering is strict. No starting phase N+1 until N's verify passes and the 
       `INT 1Ah` ticks around `aplib_depack` (plus wall-clock) and
       regenerates `tests/benchmarks/results.md` with the per-tier
       ratios for 8086 / 386 / pentium. Current result:
-      386/8086 = 1.01×, pentium/8086 = 1.31× (**gate not met** on
-      DOSBox-X `cycles=auto`). The gate expectation remains
-      documented in PLAN.md with an explicit measured verdict.
+      speedup vs 8086 (8086_ticks / tier_ticks; >1 = faster): 386 =
+      1.01×, pentium = 1.31× (**gate not met** on DOSBox-X
+      `cycles=auto`). The gate expectation remains documented in
+      PLAN.md with an explicit measured verdict.
 
 ## Phase 4: chunked extraction, large payloads
 

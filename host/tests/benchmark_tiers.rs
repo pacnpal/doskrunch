@@ -242,7 +242,7 @@ fn benchmark_tier_decompression() {
             );
             let elapsed = started.elapsed().as_millis();
             runs_ms.push(elapsed);
-            let decode_ticks = read_aplib_ticks_file(rundir_path, tier, run);
+            let decode_ticks = read_perf_ticks_file(rundir_path, tier, run);
             decode_ticks_runs.push(decode_ticks);
 
             // Sanity check: the extracted payload must match the input
@@ -282,7 +282,11 @@ fn benchmark_tier_decompression() {
         .find(|r| r.tier == "8086")
         .map(|r| r.decode_ticks_min.max(1))
         .unwrap_or(1);
-    let baseline_wall = results[0].wall_clock_min_ms.max(1);
+    let baseline_wall = results
+        .iter()
+        .find(|r| r.tier == "8086")
+        .map(|r| r.wall_clock_min_ms.max(1))
+        .unwrap_or(1);
     for r in &results {
         let decode_ratio = baseline_ticks as f64 / r.decode_ticks_min.max(1) as f64;
         let wall_ratio = baseline_wall as f64 / r.wall_clock_min_ms.max(1) as f64;
@@ -376,7 +380,7 @@ fn measure_decode_ticks(
             Err(WaitError::Wait(e)) => panic!("dosbox-x wait error: {e} ({algo}/{tier} run {run})"),
         }
 
-        let ticks = read_aplib_ticks_file(rundir_path, tier, run);
+        let ticks = read_perf_ticks_file(rundir_path, tier, run);
         if ticks < min_ticks {
             min_ticks = ticks;
         }
@@ -493,7 +497,7 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
         payload.len(),
     ));
     md.push_str("Measurement setup:\n\n");
-    md.push_str("* Isolated decode time: a bench-only stub blob (built with `make bench`, never shipped) wraps each `aplib_depack` call with `INT 1Ah` (`AH=00h`) and writes `DKPERF.BIN` (little-endian `u32` total decode ticks). The harness swaps this blob onto the packed archive for the timed run, so the shipped stubs carry no instrumentation. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
+    md.push_str("* Isolated decode time: a bench-only stub blob (built with `make bench`, never shipped) wraps each depack call (`aplib_depack` / `lzsa2_depack`, or the LZMA decode in the lzma stub) with `INT 1Ah` (`AH=00h`). When the `BENCH_PA` marker payload is present it repeats each chunk's decode 8× to overcome `INT 1Ah`'s coarse resolution, and writes the **accumulated** ticks across all chunks and repeats to `DKPERF.BIN` (little-endian `u32`). So DKPERF values are sums, not per-call times — only ratios between tiers/algos are meaningful. The harness swaps this blob onto the packed archive for the timed run, so the shipped stubs carry no instrumentation. `INT 1Ah` ticks run at ~18.2 Hz and are available on every target tier (8086+).\n");
     md.push_str("* End-to-end wall-clock: host-side timer around the full DOSBox run (`cycles=auto`), min across 3 runs.\n");
     md.push_str("* Benchmark gating: `#[ignore]` AND env-var-gated (`DOSKRUNCH_RUN_BENCHMARK=1`) so CI's `--ignored` run doesn't silently rewrite this file.\n\n");
     md.push_str("```bash\nDOSKRUNCH_RUN_BENCHMARK=1 SDL_VIDEODRIVER=dummy cargo test --test benchmark_tiers -- --ignored --nocapture\n```\n\n");
@@ -514,7 +518,7 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
     md.push_str("\n");
     if let (Some(r386), Some(rp5)) = (ratio_386, ratio_pentium) {
         md.push_str(&format!(
-            "* Phase 3 gate check (decode-only): 386/8086 = **{r386:.2}×**, pentium/8086 = **{rp5:.2}×** → **{verdict}**.\n",
+            "* Phase 3 gate check (decode-only speedup vs 8086, computed as 8086_ticks / tier_ticks; >1 = faster): 386 = **{r386:.2}×**, pentium = **{rp5:.2}×** → **{verdict}**.\n",
             verdict = if gate_met { "gate met" } else { "gate not met" }
         ));
     }
@@ -556,15 +560,17 @@ fn write_results_markdown(root: &Path, results: &[TierResult], payload: &[u8]) {
         "\n## Caveats\n\n\
          * `INT 1Ah` has coarse resolution (~54.9 ms/tick), so small payloads are noisy. \
            The 500 KiB payload keeps decode long enough to make ratios stable.\n\
-         * `INT 1Ah` wraps at midnight. This harness only times single decode calls that run \
-           for seconds, so unsigned tick-delta arithmetic is safe.\n\
+         * `INT 1Ah` wraps at MIDNIGHT (0x1800B0 ticks), not at 2^32, so a plain `t1 - t0` is \
+           wrong across a rollover. The stub computes a wrap-correct delta (`tick_delta`); a \
+           single sub-second decode crossing midnight is astronomically unlikely, but the \
+           arithmetic is correct regardless.\n\
          * Wall-clock and decode-time are both useful: the decode ratio tracks `aplib_depack` \
            itself; wall-clock still reflects user-visible elapsed time including DOS startup and \
            INT 21h file I/O.\n\
-         * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI's \
-           `cargo test --workspace -- --ignored` run skips it via the env-var check, so this \
-           file is only regenerated by a local opt-in run. Commit a refreshed copy when the \
-           numbers move.\n",
+         * The benchmark is double-gated (`#[ignore]` + `DOSKRUNCH_RUN_BENCHMARK=1`); CI never \
+           sets `DOSKRUNCH_RUN_BENCHMARK=1`, so its `--ignored` run skips this test via the \
+           env-var check and this file is only regenerated by a local opt-in run. Commit a \
+           refreshed copy when the numbers move.\n",
     );
     fs::write(&dest, md).expect("write results.md");
     eprintln!("wrote {}", dest.display());
@@ -596,7 +602,7 @@ fn build_bench_sfx(prod_sfx: &Path, bench_blob: &Path, out: &Path) {
     fs::write(out, &sfx).expect("write bench sfx");
 }
 
-fn read_aplib_ticks_file(rundir: &Path, tier: &str, run: usize) -> u32 {
+fn read_perf_ticks_file(rundir: &Path, tier: &str, run: usize) -> u32 {
     let perf = locate_case_insensitive(rundir, "DKPERF.BIN")
         .unwrap_or_else(|| panic!("missing DKPERF.BIN (tier {tier} run {run})"));
     let bytes = fs::read(&perf).unwrap_or_else(|e| {

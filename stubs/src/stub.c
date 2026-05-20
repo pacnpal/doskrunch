@@ -227,6 +227,16 @@ static u32 bios_ticks_now(void)
     int86(0x1a, &inregs, &outregs);
     return ((u32)outregs.x.cx << 16) | (u32)outregs.x.dx;
 }
+
+/* The INT 1Ah tick counter wraps at MIDNIGHT (0x1800B0 = 1,573,040 ticks),
+ * NOT at 2^32, so a plain `t1 - t0` is wrong across a midnight rollover
+ * (it underflows to a huge value). A single decode is sub-second so this
+ * is purely defensive, but compute the wrap-correct delta anyway. */
+#define BIOS_TICKS_PER_DAY 0x1800B0UL
+static u32 tick_delta(u32 t0, u32 t1)
+{
+    return (t1 >= t0) ? (t1 - t0) : (u32)(BIOS_TICKS_PER_DAY - t0 + t1);
+}
 #endif /* DKRUNCH_BENCH_TICKS */
 
 /* Case-insensitive equality against an upper-case literal. `lit` must
@@ -329,7 +339,7 @@ int main(int argc, char **argv)
     u16 run_after_offset;
     u8 algo;
 #ifdef DKRUNCH_BENCH_TICKS
-    u32 aplib_ticks_total = 0;
+    u32 decode_ticks_total = 0;
 #endif
     u8 trailer[TRAILER_SIZE];
     u8 hdr[21];
@@ -474,7 +484,7 @@ int main(int argc, char **argv)
                     t0 = bios_ticks_now();
                     produced = aplib_depack(g_src, g_buf);
                     t1 = bios_ticks_now();
-                    aplib_ticks_total += (u32)(t1 - t0);
+                    decode_ticks_total += tick_delta(t0, t1);
                     if (produced != usize) die("aplib size");
                 }
 #else
@@ -495,8 +505,19 @@ int main(int argc, char **argv)
                 if (csize > APLIB_SRC_SIZE) die("lzsa2 csize");
                 if (usize > BUF_SIZE)       die("lzsa2 usize");
                 if (read_exact(self, g_src, csize) != 0) die("read lzsa2");
+#ifdef DKRUNCH_BENCH_TICKS
+                reps = (u16)((perf_mode != 0) ? 8u : 1u);
+                for (rep = 0; rep < reps; rep++) {
+                    t0 = bios_ticks_now();
+                    produced = lzsa2_depack(g_src, g_buf);
+                    t1 = bios_ticks_now();
+                    decode_ticks_total += tick_delta(t0, t1);
+                    if (produced != usize) die("lzsa2 size");
+                }
+#else
                 produced = lzsa2_depack(g_src, g_buf);
                 if (produced != usize) die("lzsa2 size");
+#endif
                 if (_dos_write(out, g_buf, usize, &wrote) != 0 || wrote != usize) {
                     die("write lzsa2");
                 }
@@ -514,6 +535,24 @@ int main(int argc, char **argv)
         puts2(namebuf);
         puts2("\r\n");
     }
+
+#ifdef DKRUNCH_BENCH_TICKS
+    /* Bench-only: write the accumulated decode ticks (aplib or lzsa2 — the
+     * stored path has no decode) to DKPERF.BIN as a little-endian u32 for
+     * the host harness. Emitted BEFORE the run-after EXEC below, which
+     * returns without falling through; placing it here means the sidecar
+     * lands on every exit path, not just the no-run-after case. perf_mode
+     * is only set when the BENCH_PA.BIN payload is present, so a normal
+     * extraction never creates this file. */
+    if ((algo == 1 || algo == 2) && perf_mode) {
+        int perf_h;
+        if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) == 0) {
+            unsigned wrote = 0;
+            (void)_dos_write(perf_h, &decode_ticks_total, 4, &wrote);
+            _dos_close(perf_h);
+        }
+    }
+#endif /* DKRUNCH_BENCH_TICKS */
 
     /* Run-after-extract (v1.1): INT 21h/4Bh EXEC. */
     if (flags & FLAG_RUN_AFTER) {
@@ -586,19 +625,6 @@ int main(int argc, char **argv)
             return 0;
         }
     }
-
-#ifdef DKRUNCH_BENCH_TICKS
-    if (algo == 1) {
-        if (perf_mode) {
-            int perf_h;
-            if (_dos_creat("DKPERF.BIN", 0x20, &perf_h) == 0) {
-                unsigned wrote = 0;
-                (void)_dos_write(perf_h, &aplib_ticks_total, 4, &wrote);
-                _dos_close(perf_h);
-            }
-        }
-    }
-#endif /* DKRUNCH_BENCH_TICKS */
 
     _dos_close(self);
     return 0;
