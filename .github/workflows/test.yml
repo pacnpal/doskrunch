@@ -63,8 +63,10 @@ jobs:
         shard:
           - name: lzma-large
             tests: --test dosbox_lzma_large
-          - name: large-aplib-lzsa2
-            tests: --test dosbox_aplib_large --test dosbox_lzsa2_large
+          - name: aplib-large
+            tests: --test dosbox_aplib_large
+          - name: lzsa2-large
+            tests: --test dosbox_lzsa2_large
           - name: 2mb-and-maxchunk
             tests: --test dosbox_2mb_memsize2 --test dosbox_stored_max_chunk
           - name: all-tiers
