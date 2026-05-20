@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/doskrunch-logo.png" alt="DOSKrunch" width="520">
+</p>
+
 # DOSKrunch
 
 DOSKrunch is a cross-platform CLI that produces self-extracting DOS .EXE
@@ -121,8 +125,8 @@ doskrunch unpack out.exe -d extracted/
 | `486`           | `BSWAP`; better instruction scheduling. |
 | `pentium`       | U/V pipe pairing. |
 | `pentium-mmx`   | MMX-accelerated match copy in the aplib depacker. |
-| `p2`            | Pentium Pro / P6 codegen + MMX baseline. |
-| `p3`            | SSE-accelerated aPLib match-copy path (MOVUPS 16-byte blocks when match offset and length are both >= 16). |
+| `p2`            | Pentium II (P6 out-of-order core) + MMX baseline; a `p2` build needs MMX. |
+| `p3`            | P6 codegen + the MMX depacker (same as `p2`). An SSE depacker variant exists on disk but is deferred, so the shipped `p3` stub is MMX-based. |
 
 LZMA requires `--target 386` or higher. The CLI refuses `--algo lzma --target
 8086` (or `286`) with a clear error. Everything else works on every tier.
@@ -146,8 +150,8 @@ Reach for a different combination only when you have a concrete need:
 |----------------|------|---------|
 | **Not sure — make it run anywhere** (recommended) | `aplib` + `8086` *(default)* | `doskrunch pack out.exe files/` |
 | Original IBM PC/XT (4.77 MHz 8088), want the *fastest* unpacking | `lzsa2` + `8086` | `doskrunch pack --algo lzsa2 --target 8086 out.exe files/` |
-| 386/486-era machine, want tighter compression | `aplib` + `386` | `doskrunch pack --algo aplib --target 386 out.exe files/` |
-| Pentium-class machine, shipping a large payload, want the *smallest* file | `lzma` + `p2` | `doskrunch pack --algo lzma --target p2 out.exe files/` |
+| Want the *smallest* possible archive, on a 386 or newer | `lzma` + `386` | `doskrunch pack --algo lzma --target 386 out.exe files/` |
+| Running on a 486 or newer, want *faster* unpacking | `aplib` + `486` | `doskrunch pack --target 486 out.exe files/` |
 | Input is already compressed (`.zip`, `.jpg`, `.mp3`…) | `stored` | `doskrunch pack --algo stored out.exe media/` |
 
 Rules of thumb:

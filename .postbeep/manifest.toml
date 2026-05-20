@@ -5,7 +5,7 @@ slug     = "doskrunch"
 name     = "DOSKrunch"
 tagline  = "Packs files into self-extracting DOS .EXE archives, tuned per CPU."
 category = "vintage_pc"
-status   = "beta"
+status   = "stable"
 license  = "MIT"
 github   = "pacnpal/doskrunch"
 
@@ -33,7 +33,7 @@ match-copy on a Pentium III.
   386+ only), and `stored` (no compression).
 - `pack`, `unpack`, and `inspect` -- you can peek inside or extract on the
   host without booting DOS.
-- One static binary. `cargo install --git`, or grab a prebuilt for Linux,
+- One static binary. Install it with Cargo, or grab a prebuilt for Linux,
   macOS, or Windows from the releases page.
 
 Built because nothing on the market produces CPU-tier-targeted DOS SFXs from
@@ -46,6 +46,14 @@ macos   = true
 windows = true
 docker  = false
 dos     = false
+
+[downloads]
+# How much of the GitHub releases the hub mirrors over plain HTTP at
+# http://www.postbeep.net/downloads/doskrunch/<tag>/<file>. "full" hosts
+# every release, kept indefinitely (the hub re-downloads them each build).
+# That's fine here: DOSKrunch ships small single-binary release assets, so
+# vintage clients can grab any version over plain HTTP.
+release_policy = "full"
 
 [buttons]
 # Path relative to this manifest. The hub fetches button.gif and stores
