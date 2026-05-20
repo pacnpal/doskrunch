@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/doskrunch-logo.png" alt="DOSKrunch" width="520">
+</p>
+
 # DOSKrunch
 
 DOSKrunch is a cross-platform CLI that produces self-extracting DOS .EXE
