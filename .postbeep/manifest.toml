@@ -23,21 +23,20 @@ run it, and it unpacks itself. No DOS-side tooling, no separate archiver to
 install on the target.
 
 The part that doesn't exist anywhere else: the decompressor stub is built for
-the CPU you're aiming at. Pick a target from `8086` all the way up to `p3` and
-DOSKrunch ports in a depacker that uses what that chip actually has -- 32-bit
-real-mode registers on a 386, `BSWAP` on a 486, MMX on a Pentium MMX, SSE
-match-copy on a Pentium III.
+the CPU you're aiming at. Pick a target from `8086` up to `p3` and DOSKrunch
+ports in a depacker that uses what that chip actually has. 32-bit real-mode
+registers on a 386, `BSWAP` on a 486, an MMX block copy from the Pentium MMX up.
 
 - Four algorithms: `aplib` (the default; great ratio, ~200-byte stub),
   `lzsa2` (fastest to decompress on a 4.77 MHz 8088), `lzma` (best ratio,
   386+ only), and `stored` (no compression).
-- `pack`, `unpack`, and `inspect` -- you can peek inside or extract on the
-  host without booting DOS.
+- `pack`, `unpack`, and `inspect`. You can peek inside or extract on the host
+  without booting DOS.
 - One static binary. Install it with Cargo, or grab a prebuilt for Linux,
   macOS, or Windows from the releases page.
 
-Built because nothing on the market produces CPU-tier-targeted DOS SFXs from
-a modern host.
+Built because nothing else produces CPU-tier-targeted DOS SFXs from a modern
+host.
 """
 
 [platforms]
