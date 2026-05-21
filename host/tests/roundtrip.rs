@@ -141,6 +141,42 @@ fn pack_walks_directory_recursively() {
 }
 
 #[test]
+fn pack_no_recurse_skips_subdirectories() {
+    // End-to-end exercise of the --no-recurse flag (which the CLI maps to
+    // --max-depth 1). src/top.txt is kept; src/inner/deep.txt is dropped.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("inner")).unwrap();
+    std::fs::write(src.join("top.txt"), b"top-level").unwrap();
+    std::fs::write(src.join("inner").join("deep.txt"), b"in-a-subdir").unwrap();
+
+    let exe = tmp.path().join("nr.exe");
+    let mut pack = doskrunch();
+    pack.arg("pack").arg(&exe).arg(&src).args([
+        "--algo",
+        "stored",
+        "--target",
+        "8086",
+        "--no-recurse",
+    ]);
+    assert!(pack.status().unwrap().success(), "pack --no-recurse failed");
+
+    let extracted = tmp.path().join("out");
+    let mut unpack = doskrunch();
+    unpack.arg("unpack").arg(&exe).arg("-d").arg(&extracted);
+    assert!(unpack.status().unwrap().success(), "unpack failed");
+
+    assert_eq!(
+        std::fs::read(extracted.join("TOP.TXT")).unwrap(),
+        b"top-level"
+    );
+    assert!(
+        !extracted.join("DEEP.TXT").exists(),
+        "--no-recurse must skip files in subdirectories"
+    );
+}
+
+#[test]
 fn directory_pack_is_deterministic_across_two_invocations() {
     // Same tree packed twice must produce identical bytes. Exercises
     // both the walk-ordering and the reproducible-mode sort.

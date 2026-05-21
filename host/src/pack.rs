@@ -34,6 +34,13 @@ pub struct PackOptions {
     /// validation rules; an `Err` from set_run_after surfaces as a
     /// `pack()` error so the caller doesn't have to validate twice.
     pub run_after: Option<String>,
+    /// Maximum directory recursion depth for directory inputs, find(1)
+    /// style: `Some(1)` includes only each directory's immediate files
+    /// (no subdirectories), `Some(2)` descends one level, and so on.
+    /// `None` means unlimited (full recursion, the default). A value of
+    /// `Some(0)` is rejected. Only directory inputs are affected; files
+    /// named directly as inputs are always packed regardless.
+    pub max_depth: Option<usize>,
 }
 
 pub fn pack(opts: PackOptions) -> Result<()> {
@@ -72,6 +79,11 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             chunk_max,
             opts.algorithm.name()
         );
+    }
+    // The CLI maps --no-recurse to Some(1) and rejects 0; assert here too
+    // so library callers can't pass a meaningless max_depth of 0.
+    if opts.max_depth == Some(0) {
+        bail!("max_depth must be >= 1 (got 0); 1 = a directory's immediate files only");
     }
 
     let stub = stub_for(opts.algorithm, opts.target).map_err(|e| anyhow::anyhow!(e))?;
@@ -153,7 +165,7 @@ pub fn pack(opts: PackOptions) -> Result<()> {
             opts.output.display()
         );
     }
-    let expanded = expand_inputs(&opts.inputs, exclude.as_deref())?;
+    let expanded = expand_inputs(&opts.inputs, exclude.as_deref(), opts.max_depth)?;
     if expanded.len() > u16::MAX as usize {
         bail!(
             "too many input files ({}); archive header file_count is u16",
@@ -286,12 +298,15 @@ pub fn pack(opts: PackOptions) -> Result<()> {
 }
 
 /// Expand `inputs` into a flat list of regular files. Directory inputs
-/// are walked recursively; symlinks (whether passed as top-level
-/// inputs or encountered during the walk) are skipped to avoid cycles
-/// and to keep the included set within the named tree. `exclude`, if
-/// provided, is a canonical path that should be omitted from the
-/// walk — used to skip the pack's own output file when it sits inside
-/// a walked directory.
+/// are walked recursively up to `max_depth` (find(1) style: `Some(1)` =
+/// immediate files only, `Some(2)` = one level of subdirectories, `None`
+/// = unlimited); symlinks (whether passed as top-level inputs or
+/// encountered during the walk) are skipped to avoid cycles and to keep
+/// the included set within the named tree. Files named directly as
+/// top-level inputs are always included regardless of `max_depth`.
+/// `exclude`, if provided, is a canonical path that should be omitted
+/// from the walk — used to skip the pack's own output file when it sits
+/// inside a walked directory.
 ///
 /// Threat model and residual TOCTOU windows
 /// ----------------------------------------
@@ -330,7 +345,11 @@ pub fn pack(opts: PackOptions) -> Result<()> {
 /// reproducible output bytes — but pre-sorting here keeps the walk
 /// itself deterministic, which matters for any caller that wants to
 /// reason about pack ordering without relying on that downstream sort.
-fn expand_inputs(inputs: &[PathBuf], exclude: Option<&Path>) -> Result<Vec<PathBuf>> {
+fn expand_inputs(
+    inputs: &[PathBuf],
+    exclude: Option<&Path>,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
     let mut out = Vec::with_capacity(inputs.len());
     for top in inputs {
         // `symlink_metadata` so a symlinked top-level input is skipped
@@ -355,7 +374,8 @@ fn expand_inputs(inputs: &[PathBuf], exclude: Option<&Path>) -> Result<Vec<PathB
         if meta.is_file() {
             out.push(top.clone());
         } else if meta.is_dir() {
-            walk_dir(top, &mut out, exclude)?;
+            // A directory's immediate entries are "depth 1" (find(1) style).
+            walk_dir(top, &mut out, exclude, 1, max_depth)?;
         } else {
             bail!(
                 "{}: not a regular file or directory (block dev / fifo / socket?)",
@@ -366,7 +386,13 @@ fn expand_inputs(inputs: &[PathBuf], exclude: Option<&Path>) -> Result<Vec<PathB
     Ok(out)
 }
 
-fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, exclude: Option<&Path>) -> Result<()> {
+fn walk_dir(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    exclude: Option<&Path>,
+    depth: usize,
+    max_depth: Option<usize>,
+) -> Result<()> {
     // Propagate read_dir iteration errors instead of swallowing them —
     // a transient EACCES / EIO halfway through a directory should fail
     // the pack rather than silently producing an incomplete SFX.
@@ -396,7 +422,17 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, exclude: Option<&Path>) -> Resul
         if ft.is_file() {
             out.push(path);
         } else if ft.is_dir() {
-            walk_dir(&path, out, exclude)?;
+            // `dir`'s entries are at `depth`; this subdirectory's contents
+            // would be at `depth + 1`. Descend only while that stays within
+            // the cap (find(1) -maxdepth semantics). `None` = unlimited.
+            // Plain match (not Option::is_none_or) to avoid raising the MSRV.
+            let descend = match max_depth {
+                Some(m) => depth < m,
+                None => true,
+            };
+            if descend {
+                walk_dir(&path, out, exclude, depth + 1, max_depth)?;
+            }
         }
         // Other file types (block dev, char dev, FIFO, socket) are
         // silently skipped; they don't belong in a DOS SFX.
@@ -539,6 +575,7 @@ mod tests {
             preserve_timestamps: false,
             chunk_size: APLIB_CHUNK_INPUT,
             run_after: None,
+            max_depth: None,
         }
     }
 
@@ -630,12 +667,64 @@ mod tests {
         let b = make_input(&src.join("sub"), "b.txt", b"bravo");
         let c = make_input(&src.join("sub"), "c.txt", b"charlie");
 
-        let expanded = expand_inputs(std::slice::from_ref(&src), None).unwrap();
+        let expanded = expand_inputs(std::slice::from_ref(&src), None, None).unwrap();
         // expand_inputs preserves walk order (sorted per directory).
         assert_eq!(expanded.len(), 3);
         assert!(expanded.contains(&a));
         assert!(expanded.contains(&b));
         assert!(expanded.contains(&c));
+    }
+
+    #[test]
+    fn max_depth_one_packs_only_immediate_files() {
+        // src/a.txt          (depth 1, kept)
+        // src/sub/b.txt      (depth 2, dropped: --no-recurse / --max-depth 1)
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        let a = make_input(&src, "a.txt", b"alpha");
+        make_input(&src.join("sub"), "b.txt", b"bravo");
+
+        let expanded = expand_inputs(std::slice::from_ref(&src), None, Some(1)).unwrap();
+        assert_eq!(expanded, vec![a], "max_depth 1 keeps only immediate files");
+    }
+
+    #[test]
+    fn max_depth_two_descends_exactly_one_level() {
+        // src/a.txt              (depth 1, kept)
+        // src/sub/b.txt          (depth 2, kept)
+        // src/sub/deep/c.txt     (depth 3, dropped)
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        fs::create_dir_all(src.join("sub").join("deep")).unwrap();
+        let a = make_input(&src, "a.txt", b"alpha");
+        let b = make_input(&src.join("sub"), "b.txt", b"bravo");
+        make_input(&src.join("sub").join("deep"), "c.txt", b"charlie");
+
+        let mut expanded = expand_inputs(std::slice::from_ref(&src), None, Some(2)).unwrap();
+        expanded.sort();
+        let mut want = vec![a, b];
+        want.sort();
+        assert_eq!(expanded, want, "max_depth 2 descends exactly one level");
+    }
+
+    #[test]
+    fn top_level_file_input_ignores_max_depth() {
+        // A file named directly is always packed, even at --max-depth 1.
+        let td = tempfile::tempdir().unwrap();
+        let f = make_input(td.path(), "a.txt", b"x");
+        let expanded = expand_inputs(std::slice::from_ref(&f), None, Some(1)).unwrap();
+        assert_eq!(expanded, vec![f]);
+    }
+
+    #[test]
+    fn pack_rejects_max_depth_zero() {
+        let td = tempfile::tempdir().unwrap();
+        let input = make_input(td.path(), "a.txt", b"x");
+        let mut opts = default_opts(td.path(), vec![input], Algorithm::Stored);
+        opts.max_depth = Some(0);
+        let err = pack(opts).unwrap_err();
+        assert!(err.to_string().contains("max_depth must be >= 1"), "got: {err}");
     }
 
     #[cfg(unix)]
@@ -648,7 +737,7 @@ mod tests {
         let target = src.join("real.txt");
         let link = src.join("link.txt");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let expanded = expand_inputs(std::slice::from_ref(&src), None).unwrap();
+        let expanded = expand_inputs(std::slice::from_ref(&src), None, None).unwrap();
         assert_eq!(expanded.len(), 1, "symlink should be skipped");
     }
 
@@ -662,7 +751,7 @@ mod tests {
         let real = make_input(td.path(), "real.txt", b"data");
         let link = td.path().join("link.txt");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let expanded = expand_inputs(&[link.clone(), real.clone()], None).unwrap();
+        let expanded = expand_inputs(&[link.clone(), real.clone()], None, None).unwrap();
         assert_eq!(expanded.len(), 1);
         assert_eq!(expanded[0], real);
     }
@@ -677,7 +766,8 @@ mod tests {
         let out = src.join("OUT.EXE");
         fs::write(&out, b"\x4d\x5afakeexe").unwrap();
         let out_canonical = fs::canonicalize(&out).unwrap();
-        let expanded = expand_inputs(std::slice::from_ref(&src), Some(&out_canonical)).unwrap();
+        let expanded =
+            expand_inputs(std::slice::from_ref(&src), Some(&out_canonical), None).unwrap();
         assert_eq!(expanded.len(), 1, "previous OUT.EXE must be skipped");
         assert!(expanded.contains(&real));
     }
@@ -745,7 +835,7 @@ mod tests {
         let hl = td.path().join("hard.bin");
         std::fs::hard_link(&out, &hl).unwrap();
         let out_canonical = fs::canonicalize(&out).unwrap();
-        let err = expand_inputs(std::slice::from_ref(&hl), Some(&out_canonical)).unwrap_err();
+        let err = expand_inputs(std::slice::from_ref(&hl), Some(&out_canonical), None).unwrap_err();
         assert!(err.to_string().contains("output into itself"), "got: {err}");
     }
 
@@ -759,7 +849,7 @@ mod tests {
         let out = td.path().join("OUT.EXE");
         fs::write(&out, b"\x4d\x5afakeexe").unwrap();
         let out_canonical = fs::canonicalize(&out).unwrap();
-        let err = expand_inputs(std::slice::from_ref(&out), Some(&out_canonical)).unwrap_err();
+        let err = expand_inputs(std::slice::from_ref(&out), Some(&out_canonical), None).unwrap_err();
         assert!(err.to_string().contains("output into itself"), "got: {err}");
     }
 
@@ -796,7 +886,7 @@ mod tests {
             return;
         }
 
-        let err = expand_inputs(std::slice::from_ref(&src), None).err();
+        let err = expand_inputs(std::slice::from_ref(&src), None, None).err();
         // Restore so the tempdir cleanup works regardless of the result.
         let mut perms = fs::metadata(&src).unwrap().permissions();
         perms.set_mode(0o755);
