@@ -56,7 +56,8 @@ enum Cmd {
         /// Path of the .EXE to write.
         output: PathBuf,
         /// Input files or directories. Directories are walked
-        /// recursively for regular files.
+        /// recursively for regular files by default; use --no-recurse or
+        /// --max-depth to limit how deep the walk goes.
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
         /// Compression algorithm. Defaults to `aplib`. `stored` is the

@@ -425,7 +425,11 @@ fn walk_dir(
             // `dir`'s entries are at `depth`; this subdirectory's contents
             // would be at `depth + 1`. Descend only while that stays within
             // the cap (find(1) -maxdepth semantics). `None` = unlimited.
-            let descend = max_depth.is_none_or(|m| depth < m);
+            // Plain match (not Option::is_none_or) to avoid raising the MSRV.
+            let descend = match max_depth {
+                Some(m) => depth < m,
+                None => true,
+            };
             if descend {
                 walk_dir(&path, out, exclude, depth + 1, max_depth)?;
             }

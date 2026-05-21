@@ -152,8 +152,8 @@ Useful flags:
 - `--no-recurse`: for directory inputs, pack only each directory's immediate
   files (no subdirectories). Same as `--max-depth 1`.
 - `--max-depth <N>`: limit directory recursion depth, find(1) style (1 =
-  immediate files only, 2 = one level of subdirectories). Default: unlimited.
-  Conflicts with `--no-recurse`.
+  immediate files only, 2 = one level of subdirectories). Must be >= 1 (0 is
+  rejected). Default: unlimited. Conflicts with `--no-recurse`.
 - `--preserve-timestamps`: keep source mtimes instead of the default
   reproducible-build behavior (zeroed timestamps).
 
