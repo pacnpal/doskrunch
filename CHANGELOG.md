@@ -5,6 +5,28 @@ Notable changes per release. The [Unreleased] section tracks what's on
 
 ## [Unreleased]
 
+## [v1.2.0] — 2026-05-20
+
+### Added
+
+- **`pack` directory-recursion controls.** Directory inputs are still walked
+  recursively by default; `--max-depth <N>` now caps the walk find(1) style
+  (1 = a directory's immediate files only, 2 = one subdirectory level, and so
+  on; must be `>= 1`), and `--no-recurse` is shorthand for `--max-depth 1`. The
+  two conflict. Files named directly as inputs are always packed regardless of
+  depth. Threaded `PackOptions.max_depth` through `expand_inputs` / `walk_dir`
+  (depth-tracked; `None` = unlimited). Unit tests for depth 1/2 and the
+  `max_depth = 0` rejection, plus an end-to-end `--no-recurse` roundtrip test.
+
+### Changed
+
+- **Friendlier CLI.** Running `doskrunch` with no subcommand now prints the
+  full help — a top-level description, the command list, and a worked-examples
+  block (including the recommended `aPLib` + `8086` default) — and exits 0,
+  instead of clap's terse missing-subcommand error (exit 2). `--version` is
+  enabled. README and `.postbeep/docs.md` document `--no-recurse` /
+  `--max-depth`.
+
 ## [v1.1.0] — 2026-05-20
 
 ### Added
@@ -146,6 +168,7 @@ works on every supported host.
 All three are MIT-compatible. See each vendored directory's
 `LICENSE` / `COPYING` for the exact text.
 
-[Unreleased]: https://github.com/pacnpal/doskrunch/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/pacnpal/doskrunch/compare/v1.2.0...HEAD
+[v1.2.0]: https://github.com/pacnpal/doskrunch/releases/tag/v1.2.0
 [v1.1.0]: https://github.com/pacnpal/doskrunch/releases/tag/v1.1.0
 [v1.0.0]: https://github.com/pacnpal/doskrunch/releases/tag/v1.0.0
