@@ -4,8 +4,8 @@ DOSKrunch wraps a pile of files on a modern machine into a single
 self-extracting DOS `.EXE`. Copy that one file to a vintage box, run it, and it
 unpacks itself. No DOS-side tooling, no separate archiver on the target.
 
-The part that does not exist anywhere else: the decompressor stub is built for
-the CPU you are aiming at. Pick a target from the original 8086 up to a Pentium
+The part that doesn't exist anywhere else: the decompressor stub is built for
+the CPU you're aiming at. Pick a target from the original 8086 up to a Pentium
 III and DOSKrunch ports in a depacker that uses what that chip actually has
 (32-bit real-mode registers on a 386, `BSWAP` on a 486, and an MMX block copy
 from the Pentium MMX up). Everything still runs in 16-bit real mode.
@@ -24,7 +24,7 @@ doskrunch pack out.exe files/
 That is aPLib compression on the `8086` target: the best, most compatible
 choice. aPLib runs on every x86 CPU from the 1981 8088 up and compresses well
 (the decompressor is about 200 bytes), and the `8086` target runs on any DOS
-machine. If you do not have a specific reason to choose otherwise, stop here.
+machine. If you don't have a specific reason to choose otherwise, stop here.
 
 Pick something else only for a concrete reason:
 
@@ -35,8 +35,8 @@ Pick something else only for a concrete reason:
 - Input is already compressed (`.zip`, `.jpg`, `.mp3`):
   `doskrunch pack --algo stored out.exe media/`
 - Faster unpacking on a known newer CPU: raise `--target` (for example
-  `--target 486` or `--target pentium`). It speeds up unpacking only; it does
-  not change the archive size.
+  `--target 486` or `--target pentium`). It speeds up unpacking only; it doesn't
+  change the archive size.
 
 Rules of thumb:
 
@@ -105,7 +105,7 @@ doskrunch.exe --help
 ```
 
 The command arguments are identical on every platform. Windows users type
-`doskrunch.exe` (or just `doskrunch` once it is on the `PATH`).
+`doskrunch.exe` (or just `doskrunch` once it's on the `PATH`).
 
 ## Algorithms
 
@@ -115,7 +115,7 @@ The command arguments are identical on every platform. Windows users type
   4.77 MHz 8088, or when extraction time matters more than archive size. Runs
   on every tier.
 - `lzma`: best ratio. Bigger stub (about 17 KiB) and needs the 386's 32-bit
-  registers, so it is 386 and up only.
+  registers, so it's 386 and up only.
 - `stored`: no compression. Useful for already-compressed input or for testing.
   Runs on every tier.
 
@@ -138,7 +138,7 @@ The command arguments are identical on every platform. Windows users type
 - `pack <output> <inputs...>`: build an SFX. Directory inputs are walked
   recursively (symlinks are skipped). Files extract flat at runtime regardless
   of where they sit in the source tree.
-- `unpack <input> -d <dest>`: extract on the host. Does not need DOS or DOSBox.
+- `unpack <input> -d <dest>`: extract on the host. Doesn't need DOS or DOSBox.
 - `inspect <input>`: print the archive header and the per-file table.
 
 Useful flags:
