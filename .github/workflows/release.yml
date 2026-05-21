@@ -141,3 +141,34 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # Fire the POSTBEEP.NET catalog rebuild here, as the LAST step of the
+      # publish job — i.e. AFTER the release assets are attached above — so the
+      # hub mirrors the binaries on its first rebuild. notify-postbeep.yml
+      # intentionally does NOT trigger on `release:` for this reason (firing on
+      # `release: published` raced this upload and the catalog mirrored an
+      # asset-less release). Uses the POSTBEEP_DISPATCH_PAT secret, not the
+      # default GITHUB_TOKEN.
+      - name: Notify POSTBEEP.NET (after assets are uploaded)
+        env:
+          GH_TOKEN: ${{ secrets.POSTBEEP_DISPATCH_PAT }}
+          PROJECT: ${{ github.event.repository.name }}
+          OWNER:   ${{ github.repository_owner }}
+          RELEASE: ${{ github.ref_name }}
+          REF:     ${{ github.sha }}
+        run: |
+          # Skip cleanly when the dispatch PAT isn't configured (fork, or
+          # pre-setup) so we don't accumulate red runs.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "POSTBEEP_DISPATCH_PAT secret not set; skipping POSTBEEP.NET dispatch."
+            exit 0
+          fi
+          # jq-encode the payload so a weird tag can't corrupt the JSON body.
+          jq -n \
+            --arg project "$PROJECT" \
+            --arg owner "$OWNER" \
+            --arg release "$RELEASE" \
+            --arg ref "$REF" \
+            --arg reason "release" \
+            '{event_type: "project-update", client_payload: {project: $project, owner: $owner, release: $release, ref: $ref, reason: $reason}}' \
+            | gh api repos/pacnpal/POSTBEEPNET/dispatches --method POST --input -
