@@ -50,7 +50,7 @@ jobs:
       # we still want the artifact in hand so PR authors can pull the
       # new blob and commit it without having to install Watcom locally.
       - name: Upload stub blobs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stubs-blobs
           path: stubs/blobs/*.bin
